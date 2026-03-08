@@ -16,7 +16,7 @@ PYTORCH_BRANCH="${PYTORCH_BRANCH:-main}"
 # sm_120 = RTX 5090; compute_125 NOT supported by CUDA 12.9 - force correct list
 export TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;9.0a;12.0"
 
-echo "=== Building LibTorch from source (sm_120/sm_125 for RTX 5090) ==="
+echo "=== Building LibTorch from source (sm_120 for RTX 5090) ==="
 echo "  Install dir: $INSTALL_DIR"
 echo "  TORCH_CUDA_ARCH_LIST: $TORCH_CUDA_ARCH_LIST"
 echo "  Source: $PYTORCH_SRC"
@@ -34,9 +34,9 @@ git submodule update --init --recursive
 
 # Install build deps (Ubuntu)
 if command -v apt-get &>/dev/null; then
-    echo "Installing cmake, ninja, python3-dev..."
+    echo "Installing cmake, ninja, python3-dev, libnccl-dev..."
     sudo apt-get update -qq
-    sudo apt-get install -y -qq cmake ninja-build python3-dev 2>/dev/null || true
+    sudo apt-get install -y -qq cmake ninja-build python3-dev libnccl-dev libnccl2 2>/dev/null || true
     # If cublas_v2.h missing, CUDA toolkit may be incomplete - try installing
     _cuda_inc="${CUDA_HOME:-/usr/local/cuda}/include"
     if [ ! -f "$_cuda_inc/cublas_v2.h" ] 2>/dev/null; then
@@ -44,22 +44,24 @@ if command -v apt-get &>/dev/null; then
     fi
 fi
 
-# NCCL: use system lib if available, else clone (PyTorch doesn't ship it as submodule)
-NCCL_CMAKE=""
-if pkg-config --exists nccl 2>/dev/null || [ -f /usr/include/nccl.h ] 2>/dev/null; then
-    echo "Using system NCCL"
-    NCCL_CMAKE="-DUSE_SYSTEM_NCCL=ON"
-elif [ ! -f "third_party/nccl/Makefile" ]; then
-    echo "Cloning NCCL into third_party/nccl..."
-    rm -rf third_party/nccl
-    mkdir -p third_party
-    git clone --depth 1 https://github.com/NVIDIA/nccl.git third_party/nccl
-    [ -f "third_party/nccl/Makefile" ] || { echo "NCCL clone failed - run: sudo apt install libnccl-dev"; exit 1; }
+# NCCL: MUST use system lib - building from source hits compute_125 (unsupported by CUDA 12.9 nvcc)
+# Require libnccl-dev; install with: sudo apt install libnccl-dev libnccl2
+_has_nccl=false
+dpkg -l libnccl-dev 2>/dev/null | grep -q 'ii.*libnccl-dev' && _has_nccl=true
+pkg-config --exists nccl 2>/dev/null && _has_nccl=true
+[ -f /usr/include/nccl.h ] 2>/dev/null && _has_nccl=true
+[ -f /usr/include/x86_64-linux-gnu/nccl.h ] 2>/dev/null && _has_nccl=true
+if [ "$_has_nccl" != "true" ]; then
+    echo "ERROR: libnccl-dev is required. Install with: sudo apt install libnccl-dev libnccl2"
+    echo "Add NVIDIA repo if needed: https://developer.download.nvidia.com/compute/cuda/repos/"
+    exit 1
 fi
+echo "Using system NCCL"
 
-# Configure and build - must clear build dir so NCCL gets fresh TORCH_CUDA_ARCH_LIST
+# Configure and build - MUST clear build dir so cmake reconfigures with USE_SYSTEM_NCCL=ON
 echo "Configuring (cmake)..."
 rm -rf build
+echo "  (cleared build dir for fresh config)"
 mkdir -p build
 cd build
 # CUDA path
@@ -81,7 +83,9 @@ cmake .. -G Ninja \
     -DUSE_NUMA=OFF \
     -DCUDAToolkit_ROOT="$CUDA_ROOT" \
     -DTORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
-    $CMAKE_CUDA $NCCL_CMAKE
+    -DUSE_SYSTEM_NCCL=ON \
+    -DNCCL_ROOT=/usr \
+    $CMAKE_CUDA
 
 echo "Building (30-90 min)..."
 ninja -j"$(nproc 2>/dev/null || echo 8)"
