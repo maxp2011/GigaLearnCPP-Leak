@@ -33,18 +33,24 @@ echo "Updating submodules..."
 git submodule sync --recursive
 git submodule update --init --recursive
 
-# NCCL is not a git submodule; PyTorch expects source in third_party/nccl
-if [ ! -f "third_party/nccl/Makefile" ]; then
-    echo "Cloning NCCL (PyTorch expects it in third_party/nccl)..."
-    rm -rf third_party/nccl
-    git clone --depth 1 https://github.com/NVIDIA/nccl.git third_party/nccl
-fi
-
 # Install build deps (Ubuntu)
 if command -v apt-get &>/dev/null; then
-    echo "Installing cmake, ninja..."
+    echo "Installing cmake, ninja, python3-dev..."
     sudo apt-get update -qq
     sudo apt-get install -y -qq cmake ninja-build python3-dev 2>/dev/null || true
+fi
+
+# NCCL: use system lib if available, else clone (PyTorch doesn't ship it as submodule)
+NCCL_CMAKE=""
+if pkg-config --exists nccl 2>/dev/null || [ -f /usr/include/nccl.h ] 2>/dev/null; then
+    echo "Using system NCCL"
+    NCCL_CMAKE="-DUSE_SYSTEM_NCCL=ON"
+elif [ ! -f "third_party/nccl/Makefile" ]; then
+    echo "Cloning NCCL into third_party/nccl..."
+    rm -rf third_party/nccl
+    mkdir -p third_party
+    git clone --depth 1 https://github.com/NVIDIA/nccl.git third_party/nccl
+    [ -f "third_party/nccl/Makefile" ] || { echo "NCCL clone failed - run: sudo apt install libnccl-dev"; exit 1; }
 fi
 
 # Configure and build
@@ -68,7 +74,7 @@ cmake .. -G Ninja \
     -DUSE_MPI=OFF \
     -DUSE_NUMA=OFF \
     -DTORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
-    $CMAKE_CUDA
+    $CMAKE_CUDA $NCCL_CMAKE
 
 echo "Building (30-90 min)..."
 ninja -j"$(nproc 2>/dev/null || echo 8)"
