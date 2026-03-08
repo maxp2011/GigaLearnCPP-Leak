@@ -40,11 +40,12 @@ if [ ! -f "third_party/nccl/Makefile" ] 2>/dev/null; then
     [ -f "third_party/nccl/Makefile" ] || { echo "ERROR: NCCL clone failed"; exit 1; }
 fi
 
-# Install build deps (Ubuntu)
+# Install build deps (Ubuntu) - libnccl-dev avoids building NCCL from source
 if command -v apt-get &>/dev/null; then
     echo "Installing cmake, ninja, python3-dev, libnccl-dev..."
     sudo apt-get update -qq
-    sudo apt-get install -y -qq cmake ninja-build python3-dev libnccl-dev libnccl2 2>/dev/null || true
+    sudo apt-get install -y -qq cmake ninja-build python3-dev 2>/dev/null || true
+    sudo apt-get install -y -qq libnccl-dev libnccl2 2>/dev/null || true
     # If cublas_v2.h missing, CUDA toolkit may be incomplete - try installing
     _cuda_inc="${CUDA_HOME:-/usr/local/cuda}/include"
     if [ ! -f "$_cuda_inc/cublas_v2.h" ] 2>/dev/null; then
@@ -102,6 +103,17 @@ fi
 echo "Configuring (cmake)..."
 rm -rf build
 echo "  (cleared build dir for fresh config)"
+
+# Ensure NCCL source exists before cmake (required when not using system NCCL)
+if [ "$_has_nccl" != "true" ]; then
+    if [ ! -f "third_party/nccl/Makefile" ] 2>/dev/null; then
+        echo "Cloning NCCL (required for build)..."
+        rm -rf third_party/nccl 2>/dev/null || true
+        mkdir -p third_party
+        git clone --depth 1 https://github.com/NVIDIA/nccl.git third_party/nccl || { echo "ERROR: NCCL clone failed. Try: sudo apt install libnccl-dev"; exit 1; }
+    fi
+    [ -f "third_party/nccl/Makefile" ] || { echo "ERROR: third_party/nccl missing. Install libnccl-dev or check network."; exit 1; }
+fi
 
 # Patch nccl.cmake to strip compute_125 - MUST run right before cmake
 NCCL_CMAKE="cmake/External/nccl.cmake"
