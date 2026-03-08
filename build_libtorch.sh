@@ -10,6 +10,12 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="${1:-$ROOT/libtorch}"
 PYTORCH_SRC="${PYTORCH_SRC:-$ROOT/pytorch-src}"
+
+# Use workspace for temp files (vast.ai /tmp is small; NVCC needs lots of space)
+export TMPDIR="${TMPDIR:-$ROOT/tmp}"
+export TEMP="$TMPDIR"
+export TMP="$TMPDIR"
+mkdir -p "$TMPDIR"
 PYTORCH_REPO="${PYTORCH_REPO:-https://github.com/pytorch/pytorch.git}"
 PYTORCH_BRANCH="${PYTORCH_BRANCH:-main}"
 
@@ -281,7 +287,8 @@ print('Stripped compute_125 from', count, 'file(s)' if count else '(none found)'
 PYSTRIP
 
 echo "Building (30-90 min)..."
-ninja -j"$(nproc 2>/dev/null || echo 8)"
+# Use -j4 to avoid filling /tmp (NVCC temp files); override with NINJA_JOBS=8 etc
+ninja -j"${NINJA_JOBS:-4}"
 ninja install
 
 echo ""
