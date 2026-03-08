@@ -38,6 +38,11 @@ if command -v apt-get &>/dev/null; then
     echo "Installing cmake, ninja, python3-dev..."
     sudo apt-get update -qq
     sudo apt-get install -y -qq cmake ninja-build python3-dev 2>/dev/null || true
+    # If cublas_v2.h missing, CUDA toolkit may be incomplete - try installing
+    _cuda_inc="${CUDA_HOME:-/usr/local/cuda}/include"
+    if [ ! -f "$_cuda_inc/cublas_v2.h" ] 2>/dev/null; then
+        echo "cublas_v2.h not found - install full CUDA toolkit if build fails"
+    fi
 fi
 
 # NCCL: use system lib if available, else clone (PyTorch doesn't ship it as submodule)
@@ -71,8 +76,10 @@ cmake .. -G Ninja \
     -DBUILD_SHARED_LIBS=ON \
     -DUSE_CUDA=ON \
     -DUSE_CUDNN=ON \
+    -DUSE_CUFILE=OFF \
     -DUSE_MPI=OFF \
     -DUSE_NUMA=OFF \
+    -DCUDAToolkit_ROOT="$CUDA_ROOT" \
     -DTORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
     $CMAKE_CUDA $NCCL_CMAKE
 
