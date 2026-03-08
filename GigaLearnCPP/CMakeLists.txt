@@ -59,13 +59,14 @@ if (TORCH_CUDA_LIBRARIES)
 	target_compile_definitions(GigaLearnCPP PRIVATE -DRG_CUDA_SUPPORT)
 	# Note: LibTorch adds --Werror cross-execution-space-call. --Wno-error is not a valid nvcc option.
 	# CUDA 13.0 MSBuild targets require CudaToolkitDir with trailing slash (else v13.0+bin = v13.0bin)
-	if(CUDA_TOOLKIT_ROOT_DIR)
-		string(REGEX REPLACE "/?$" "/" _cuda_dir "${CUDA_TOOLKIT_ROOT_DIR}")
-		set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_GLOBAL_CudaToolkitDir "${_cuda_dir}")
+	# CudaToolkitDir is Windows/VS only; skip on Linux to avoid regex errors
+	if(MSVC AND CUDA_TOOLKIT_ROOT_DIR AND NOT "${CUDA_TOOLKIT_ROOT_DIR}" STREQUAL "")
+		string(REGEX REPLACE "/+$" "" _cuda_dir "${CUDA_TOOLKIT_ROOT_DIR}")
+		set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_GLOBAL_CudaToolkitDir "${_cuda_dir}/")
 	endif()
-	if(CMAKE_VS_PLATFORM_TOOLSET_CUDA_CUSTOM_DIR)
-		string(REGEX REPLACE "/?$" "/" _cuda_dir "${CMAKE_VS_PLATFORM_TOOLSET_CUDA_CUSTOM_DIR}")
-		set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_GLOBAL_CudaToolkitDir "${_cuda_dir}")
+	if(MSVC AND CMAKE_VS_PLATFORM_TOOLSET_CUDA_CUSTOM_DIR AND NOT "${CMAKE_VS_PLATFORM_TOOLSET_CUDA_CUSTOM_DIR}" STREQUAL "")
+		string(REGEX REPLACE "/+$" "" _cuda_dir "${CMAKE_VS_PLATFORM_TOOLSET_CUDA_CUSTOM_DIR}")
+		set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_GLOBAL_CudaToolkitDir "${_cuda_dir}/")
 	endif()
 endif()
 
@@ -125,9 +126,9 @@ if (MSVC)
 endif (MSVC)
 
 # Make our python files copy over to our build dir
-configure_file("./python_scripts/__init__.py" "../python_scripts/__init__.py" COPY)
-configure_file("./python_scripts/metric_receiver.py" "../python_scripts/metric_receiver.py" COPY)
-configure_file("./python_scripts/render_receiver.py" "../python_scripts/render_receiver.py" COPY)
+configure_file("./python_scripts/__init__.py" "../python_scripts/__init__.py" COPYONLY)
+configure_file("./python_scripts/metric_receiver.py" "../python_scripts/metric_receiver.py" COPYONLY)
+configure_file("./python_scripts/render_receiver.py" "../python_scripts/render_receiver.py" COPYONLY)
 
 # MSVC sometimes won't link to the libtorch DLLs unless you do this
 # This is also from https://pytorch.org/cppdocs/installing.html#minimal-example
