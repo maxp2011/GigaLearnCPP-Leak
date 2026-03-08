@@ -10,6 +10,7 @@
 #include <RLGymCPP/ObsBuilders/CustomObs.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <RLGymCPP/StateSetters/KickoffState.h>
@@ -165,9 +166,9 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 }
 
 int main(int argc, char* argv[]) {
-	// Initialize RocketSim with collision meshes
-	// Change this path to point to your meshes!
-	RocketSim::Init(R"(C:\Users\Maxph\Downloads\rl sim vis (1)\rlsimviscpp\build\yes yes yesy\RocketSim-main\collision_meshes)");
+	// Initialize RocketSim with collision meshes (relative to cwd; use COLLISION_MESH_PATH env to override)
+	const char* meshPath = std::getenv("COLLISION_MESH_PATH");
+	RocketSim::Init(meshPath && meshPath[0] ? std::filesystem::path(meshPath) : std::filesystem::path("collision_meshes"));
 
 	// Make configuration for the learner
 	LearnerConfig cfg = {};

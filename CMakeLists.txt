@@ -31,6 +31,19 @@ add_custom_command(TARGET GigaLearnBot POST_BUILD
 	COMMENT "Copying python_scripts for metrics/render receivers"
 )
 
+# Copy collision_meshes to exe dir if present (RocketSim needs soccar/*.cmf, hoops/*.cmf)
+if(EXISTS "${CMAKE_SOURCE_DIR}/collision_meshes/soccar")
+	add_custom_command(TARGET GigaLearnBot POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E copy_directory
+			${CMAKE_SOURCE_DIR}/collision_meshes
+			$<TARGET_FILE_DIR:GigaLearnBot>/collision_meshes
+		COMMENT "Copying collision_meshes for RocketSim"
+	)
+	message(STATUS "collision_meshes found; will copy to build dir")
+else()
+	message(STATUS "collision_meshes not found - add collision_meshes/soccar/*.cmf for RocketSim (see DEPLOY.md)")
+endif()
+
 # RLBot inference executable (separate from training)
 add_executable(GigaLearnRLBot
 	rlbot_build/src/RLBotMain.cpp

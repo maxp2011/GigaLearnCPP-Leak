@@ -15,6 +15,8 @@ rsync -avz --exclude build --exclude libtorch GigaLearnCPP-Leak/ user@vps:/home/
 ```
 GigaLearnCPP-Leak/
 ├── libtorch/              # Add this: LibTorch (download below)
+├── collision_meshes/      # Add this: RocketSim arena meshes (see step 5)
+│   └── soccar/*.cmf
 ├── build/                 # Created by build
 ├── build.sh               # Ubuntu build script
 ├── build.cmd              # Windows build script
@@ -81,6 +83,44 @@ Output: `build/libGigaLearnCPP.so`, `build/GigaLearnBot`, `build/GigaLearnRLBot`
 export LIBTORCH_PATH=/opt/libtorch
 export CUDA_HOME=/usr/local/cuda-12.1
 ./build.sh
+```
+
+## 5. Add collision meshes (required for RocketSim)
+
+RocketSim needs arena collision meshes (`collision_meshes/soccar/*.cmf`). Without them you get "No arena meshes found for gamemode soccar".
+
+**Option A – Clone from GitHub** (if you've uploaded to [maxp2011/Collision_Meshes](https://github.com/maxp2011/Collision_Meshes)):
+
+```bash
+cd /workspace/GigaLearnCPP-Leak
+chmod +x setup_collision_meshes.sh
+./setup_collision_meshes.sh
+```
+
+**Option B – Upload from Windows** (one-time, to populate Collision_Meshes repo):
+
+```powershell
+# On Windows (PowerShell), from the project folder:
+.\upload_collision_meshes.ps1
+```
+
+Then use Option A on the server.
+
+**Option C – Copy manually** (zip from Windows, unzip on server):
+
+Place `collision_meshes/soccar/*.cmf` in the project root.
+
+**Option D – Generate with RLArenaCollisionDumper** (Windows + Rocket League):
+
+1. Download [RLArenaCollisionDumper](https://github.com/ZealanL/RLArenaCollisionDumper)
+2. Run it with Rocket League installed; it outputs `.cmf` files
+3. Put them in `collision_meshes/soccar/` and run `upload_collision_meshes.ps1`
+
+The build copies `collision_meshes` into the build dir if it exists. Or set `COLLISION_MESH_PATH` to override at runtime:
+
+```bash
+export COLLISION_MESH_PATH=/path/to/collision_meshes
+./GigaLearnBot
 ```
 
 ## Run training
