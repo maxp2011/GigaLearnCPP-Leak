@@ -31,12 +31,13 @@ cd "$PYTORCH_SRC"
 echo "Updating submodules..."
 git submodule sync --recursive
 git submodule update --init --recursive
-# Ensure NCCL submodule exists (may be missing if third_party/nccl was removed)
+# NCCL: PyTorch removed it from .gitmodules - clone directly if missing
 if [ ! -f "third_party/nccl/Makefile" ] 2>/dev/null; then
-    echo "Initializing NCCL submodule..."
+    echo "Cloning NCCL (PyTorch no longer includes it as submodule)..."
     rm -rf third_party/nccl 2>/dev/null || true
-    git submodule update --init --recursive third_party/nccl
-    [ -f "third_party/nccl/Makefile" ] || { echo "ERROR: NCCL submodule failed to initialize"; exit 1; }
+    mkdir -p third_party
+    git clone --depth 1 https://github.com/NVIDIA/nccl.git third_party/nccl
+    [ -f "third_party/nccl/Makefile" ] || { echo "ERROR: NCCL clone failed"; exit 1; }
 fi
 
 # Install build deps (Ubuntu)
