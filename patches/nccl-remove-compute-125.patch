@@ -1,0 +1,12 @@
+--- a/cmake/External/nccl.cmake
++++ b/cmake/External/nccl.cmake
+@@ -14,6 +14,9 @@ else()
+  torch_cuda_get_nvcc_gencode_flag(NVCC_GENCODE)
+  string(REPLACE "-gencode;" "-gencode=" NVCC_GENCODE "${NVCC_GENCODE}")
+  # this second replacement is needed when there are multiple archs
+  string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "${NVCC_GENCODE}")
++ # CUDA 12.9 nvcc does not support compute_125 - strip it (PyTorch adds 12.0a for CUDA 12.9)
++ string(REGEX REPLACE " -gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")
++ string(REGEX REPLACE "-gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")
+ 
+  if(DEFINED ENV{MAX_JOBS})

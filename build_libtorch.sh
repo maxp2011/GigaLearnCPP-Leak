@@ -79,34 +79,45 @@ fi
 # Patch NCCL build to strip compute_125 - nvcc 12.9 does not support it
 # NCCL gets NVCC_GENCODE from torch_cuda_get_nvcc_gencode_flag; we strip 12.0a here
 NCCL_CMAKE="cmake/External/nccl.cmake"
-if [ -f "$NCCL_CMAKE" ] && ! grep -q "CUDA 12.9 nvcc does not support compute_125" "$NCCL_CMAKE" 2>/dev/null; then
-    echo "Patching nccl.cmake to strip compute_125 from NVCC_GENCODE..."
-    # Insert strip of compute_125 after the string(REPLACE ";-gencode" ...) line
-    sed -i '/string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE/a\
-  # CUDA 12.9 nvcc does not support compute_125 - strip it\
-  string(REGEX REPLACE " -gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")\
-  string(REGEX REPLACE "-gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")' "$NCCL_CMAKE" 2>/dev/null || {
-        python3 << 'PYEOF2'
+NCCL_PATCH="$ROOT/patches/nccl-remove-compute-125.patch"
+_nccl_patched=false
+if [ -f "$NCCL_CMAKE" ]; then
+    if grep -q "CUDA 12.9 nvcc does not support compute_125" "$NCCL_CMAKE" 2>/dev/null; then
+        _nccl_patched=true
+        echo "nccl.cmake already patched"
+    else
+        echo "Patching nccl.cmake to strip compute_125 from NVCC_GENCODE..."
+        if [ -f "$NCCL_PATCH" ] && git apply --check "$NCCL_PATCH" 2>/dev/null; then
+            git apply "$NCCL_PATCH" && _nccl_patched=true && echo "Applied nccl patch via git"
+        fi
+        if [ "$_nccl_patched" != "true" ]; then
+            python3 << 'PYEOF2'
+import re
 path = "cmake/External/nccl.cmake"
 with open(path) as f:
     content = f.read()
 if "CUDA 12.9 nvcc does not support compute_125" in content:
     print("nccl.cmake already patched")
+    exit(0)
+# Match line with optional leading space (PyTorch uses single space)
+pat = r'(\s*)string\(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "\$\{NVCC_GENCODE\}"\)'
+insert = r'''\1string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "${NVCC_GENCODE}")
+\1# CUDA 12.9 nvcc does not support compute_125 - strip it
+\1string(REGEX REPLACE " -gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")
+\1string(REGEX REPLACE "-gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")'''
+new_content, n = re.subn(pat, insert, content)
+if n > 0:
+    with open(path, 'w') as f:
+        f.write(new_content)
+    print("Patched nccl.cmake via Python")
+    exit(0)
 else:
-    old = 'string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "${NVCC_GENCODE}")'
-    new = '''string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "${NVCC_GENCODE}")
-  # CUDA 12.9 nvcc does not support compute_125 - strip it
-  string(REGEX REPLACE " -gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")
-  string(REGEX REPLACE "-gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")'''
-    if old in content:
-        content = content.replace(old, new)
-        with open(path, 'w') as f:
-            f.write(content)
-        print("Patched nccl.cmake")
-    else:
-        print("nccl.cmake patch skipped (pattern not found)")
+    print("ERROR: nccl.cmake patch failed - pattern not found")
+    exit(1)
 PYEOF2
-    }
+            _nccl_patched=true
+        fi
+    fi
 fi
 
 # Prefer system NCCL when available
