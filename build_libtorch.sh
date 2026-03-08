@@ -146,6 +146,15 @@ cmake .. -G Ninja \
     $NCCL_OPTS \
     $CMAKE_CUDA
 
+# Post-cmake: strip compute_125 from NCCL build in ninja files (fallback if cmake patch failed)
+# CUDA 12.9 nvcc does not support compute_125
+for f in build.ninja rules.ninja; do
+  if [ -f "$f" ] && grep -q "compute_125" "$f" 2>/dev/null; then
+    sed -i 's/ -gencode=arch=compute_125,code=sm_125//g; s/-gencode=arch=compute_125,code=sm_125//g' "$f"
+    echo "Stripped compute_125 from $f"
+  fi
+done
+
 echo "Building (30-90 min)..."
 ninja -j"$(nproc 2>/dev/null || echo 8)"
 ninja install
