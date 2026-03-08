@@ -231,6 +231,7 @@ CMAKE_CUDA=""
 [ -n "$CUDA_ROOT" ] && CMAKE_CUDA="-DCUDA_TOOLKIT_ROOT_DIR=$CUDA_ROOT"
 
 # Put USE_SYSTEM_NCCL first so it's not overridden by defaults
+# USE_FLASH_ATTENTION=OFF: Flash Attention CUDA kernels cause NVCC segfault (known issue with sm_80+)
 cmake .. -G Ninja \
     $NCCL_OPTS \
     -DCMAKE_BUILD_TYPE=Release \
@@ -240,6 +241,7 @@ cmake .. -G Ninja \
     -DBUILD_SHARED_LIBS=ON \
     -DUSE_CUDA=ON \
     -DUSE_CUDNN=ON \
+    -DUSE_FLASH_ATTENTION=OFF \
     -DUSE_CUFILE=OFF \
     -DUSE_MPI=OFF \
     -DUSE_NUMA=OFF \
