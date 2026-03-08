@@ -173,7 +173,7 @@ int main(int argc, char* argv[]) {
 	// Make configuration for the learner
 	LearnerConfig cfg = {};
 
-	cfg.deviceType = LearnerDeviceType::GPU_CUDA;
+	cfg.deviceType = ParseBoolArg(argc, argv, "--cpu", false) ? LearnerDeviceType::CPU : LearnerDeviceType::GPU_CUDA;
 
 	cfg.ppo.useHalfPrecision = false;  // FP16 inference during rollout — major CUDA speedup
 
