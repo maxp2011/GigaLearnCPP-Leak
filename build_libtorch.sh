@@ -13,8 +13,8 @@ PYTORCH_SRC="${PYTORCH_SRC:-$ROOT/pytorch-src}"
 PYTORCH_REPO="${PYTORCH_REPO:-https://github.com/pytorch/pytorch.git}"
 PYTORCH_BRANCH="${PYTORCH_BRANCH:-main}"
 
-# sm_120 = RTX 5090/5080 Blackwell (compute_125 not supported by CUDA 12.9 nvcc)
-export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6;8.9;9.0;9.0a;12.0}"
+# sm_120 = RTX 5090; compute_125 NOT supported by CUDA 12.9 - force correct list
+export TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;9.0a;12.0"
 
 echo "=== Building LibTorch from source (sm_120/sm_125 for RTX 5090) ==="
 echo "  Install dir: $INSTALL_DIR"
@@ -57,8 +57,9 @@ elif [ ! -f "third_party/nccl/Makefile" ]; then
     [ -f "third_party/nccl/Makefile" ] || { echo "NCCL clone failed - run: sudo apt install libnccl-dev"; exit 1; }
 fi
 
-# Configure and build
+# Configure and build - must clear build dir so NCCL gets fresh TORCH_CUDA_ARCH_LIST
 echo "Configuring (cmake)..."
+rm -rf build
 mkdir -p build
 cd build
 # CUDA path
