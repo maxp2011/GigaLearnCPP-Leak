@@ -1,4 +1,5 @@
 #pragma once
+#include <iterator>
 #include <RLGymCPP/Framework.h>
 #include "../FrameworkTorch.h"
 
@@ -196,8 +197,13 @@ namespace GGL {
 				model->Load(folder, allowNotExist, loadOptims);
 		}
 
-		class ModelIterator : public std::iterator<std::forward_iterator_tag, typename Model*> {
+		class ModelIterator {
 		public:
+			using iterator_category = std::forward_iterator_tag;
+			using value_type = Model*;
+			using difference_type = std::ptrdiff_t;
+			using pointer = Model**;
+			using reference = Model*&;
 			using MapItr = std::map<std::string, Model*>::iterator;
 			MapItr _mapItr;
 
@@ -208,7 +214,7 @@ namespace GGL {
 			bool operator==(const ModelIterator& other) const { return _mapItr == other._mapItr; }
 			bool operator!=(const ModelIterator& other) const { return _mapItr != other._mapItr; }
 
-			typename Model*& operator*() const { return _mapItr->second; }
+			Model*& operator*() const { return _mapItr->second; }
 		};
 
 		ModelIterator begin() {

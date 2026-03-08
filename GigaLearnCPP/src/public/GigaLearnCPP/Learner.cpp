@@ -31,7 +31,11 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 #if defined(_WIN32)
 	Py_SetPythonHome(pyHome.c_str());
 #else
-	Py_SetPythonHome(pyHome.string().c_str());
+	wchar_t* pyHomeW = Py_DecodeLocale(pyHome.string().c_str(), nullptr);
+	if (pyHomeW) {
+		Py_SetPythonHome(pyHomeW);
+		PyMem_RawFree(pyHomeW);
+	}
 #endif
 	pybind11::initialize_interpreter();
 
