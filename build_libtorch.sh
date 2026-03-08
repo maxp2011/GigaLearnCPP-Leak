@@ -31,6 +31,13 @@ cd "$PYTORCH_SRC"
 echo "Updating submodules..."
 git submodule sync --recursive
 git submodule update --init --recursive
+# Ensure NCCL submodule exists (may be missing if third_party/nccl was removed)
+if [ ! -f "third_party/nccl/Makefile" ] 2>/dev/null; then
+    echo "Initializing NCCL submodule..."
+    rm -rf third_party/nccl 2>/dev/null || true
+    git submodule update --init --recursive third_party/nccl
+    [ -f "third_party/nccl/Makefile" ] || { echo "ERROR: NCCL submodule failed to initialize"; exit 1; }
+fi
 
 # Install build deps (Ubuntu)
 if command -v apt-get &>/dev/null; then
