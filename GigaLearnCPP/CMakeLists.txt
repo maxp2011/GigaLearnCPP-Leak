@@ -51,8 +51,10 @@ target_compile_definitions(GigaLearnCPP PRIVATE -DWITHIN_GGL)
 target_include_directories(GigaLearnCPP PUBLIC "src/public")
 target_include_directories(GigaLearnCPP PRIVATE "src/private")
 
-# Include libtorch
-target_link_libraries(GigaLearnCPP PRIVATE "${TORCH_LIBRARIES}")
+# Include libtorch (filter out NOTFOUND entries that break linking on some Linux/CUDA setups)
+set(_torch_libs ${TORCH_LIBRARIES})
+list(FILTER _torch_libs EXCLUDE REGEX "NOTFOUND")
+target_link_libraries(GigaLearnCPP PRIVATE ${_torch_libs})
 
 if (TORCH_CUDA_LIBRARIES)
 	message("Enabling CUDA support...")

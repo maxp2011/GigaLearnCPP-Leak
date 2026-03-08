@@ -25,7 +25,7 @@ struct BoostPadState {
 	float cooldown = 0;
 
 	Car* curLockedCar = NULL;
-	uint32_t prevLockedCarID = NULL;
+	uint32_t prevLockedCarID = 0;
 
 	void Serialize(DataStreamOut& out) const;
 	void Deserialize(DataStreamIn& in);
