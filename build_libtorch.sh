@@ -126,15 +126,30 @@ PYNCCL
     fi
 fi
 
-# Patch NCCL Makefile to filter compute_125 at build time (belt-and-suspenders - cmake patch may not take effect)
-# CUDA 12.9 nvcc does not support compute_125; override NVCC_GENCODE when make runs
-NCCL_MAKEFILE="third_party/nccl/Makefile"
-if [ -f "$NCCL_MAKEFILE" ] && ! grep -q "filter compute_125 at build time" "$NCCL_MAKEFILE" 2>/dev/null; then
-    echo "Patching NCCL Makefile to filter compute_125 from NVCC_GENCODE..."
-    _line1='# CUDA 12.9 nvcc does not support compute_125 - filter at build time'
-    _line2="override NVCC_GENCODE := \$(shell echo '\$(NVCC_GENCODE)' | sed 's/ -gencode=arch=compute_125,code=sm_125//g' | sed 's/-gencode=arch=compute_125,code=sm_125//g')"
-    { echo "$_line1"; echo "$_line2"; cat "$NCCL_MAKEFILE"; } > "${NCCL_MAKEFILE}.tmp" && mv "${NCCL_MAKEFILE}.tmp" "$NCCL_MAKEFILE"
-    echo "  Patched NCCL Makefile"
+# Patch NCCL makefiles/common.mk to filter compute_125 at build time
+# CUDA 12.9 nvcc does not support compute_125; this is where NVCC_GENCODE is used
+NCCL_COMMON_MK="third_party/nccl/makefiles/common.mk"
+if [ -f "$NCCL_COMMON_MK" ] && ! grep -q "filter compute_125" "$NCCL_COMMON_MK" 2>/dev/null; then
+    echo "Patching NCCL makefiles/common.mk to filter compute_125 from NVCC_GENCODE..."
+    # Insert override right after NVCC_GENCODE is set (before $(info NVCC_GENCODE...))
+    python3 << 'PYNCCLMK'
+path = "third_party/nccl/makefiles/common.mk"
+with open(path) as f:
+    content = f.read()
+# Insert after the last NVCC_GENCODE ?= block, before $(info NVCC_GENCODE...)
+marker = "$(info NVCC_GENCODE is ${NVCC_GENCODE})"
+patch = '''# CUDA 12.9 nvcc does not support compute_125 - filter at build time
+override NVCC_GENCODE := $(shell echo '$(NVCC_GENCODE)' | sed 's/ -gencode=arch=compute_125,code=sm_125//g' | sed 's/-gencode=arch=compute_125,code=sm_125//g')
+
+'''
+if marker in content and "filter compute_125" not in content:
+    content = content.replace(marker, patch + marker)
+    with open(path, "w") as f:
+        f.write(content)
+    print("  Patched makefiles/common.mk")
+else:
+    raise SystemExit("ERROR: NCCL common.mk patch failed - marker not found or already patched")
+PYNCCLMK
 fi
 
 mkdir -p build
