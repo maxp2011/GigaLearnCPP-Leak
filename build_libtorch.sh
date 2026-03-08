@@ -76,6 +76,39 @@ else:
 PYEOF
 fi
 
+# Patch NCCL build to strip compute_125 - nvcc 12.9 does not support it
+# NCCL gets NVCC_GENCODE from torch_cuda_get_nvcc_gencode_flag; we strip 12.0a here
+NCCL_CMAKE="cmake/External/nccl.cmake"
+if [ -f "$NCCL_CMAKE" ] && ! grep -q "CUDA 12.9 nvcc does not support compute_125" "$NCCL_CMAKE" 2>/dev/null; then
+    echo "Patching nccl.cmake to strip compute_125 from NVCC_GENCODE..."
+    # Insert strip of compute_125 after the string(REPLACE ";-gencode" ...) line
+    sed -i '/string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE/a\
+  # CUDA 12.9 nvcc does not support compute_125 - strip it\
+  string(REGEX REPLACE " -gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")\
+  string(REGEX REPLACE "-gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")' "$NCCL_CMAKE" 2>/dev/null || {
+        python3 << 'PYEOF2'
+path = "cmake/External/nccl.cmake"
+with open(path) as f:
+    content = f.read()
+if "CUDA 12.9 nvcc does not support compute_125" in content:
+    print("nccl.cmake already patched")
+else:
+    old = 'string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "${NVCC_GENCODE}")'
+    new = '''string(REPLACE ";-gencode" " -gencode" NVCC_GENCODE "${NVCC_GENCODE}")
+  # CUDA 12.9 nvcc does not support compute_125 - strip it
+  string(REGEX REPLACE " -gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")
+  string(REGEX REPLACE "-gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")'''
+    if old in content:
+        content = content.replace(old, new)
+        with open(path, 'w') as f:
+            f.write(content)
+        print("Patched nccl.cmake")
+    else:
+        print("nccl.cmake patch skipped (pattern not found)")
+PYEOF2
+    }
+fi
+
 # Prefer system NCCL when available
 NCCL_OPTS=""
 _has_nccl=false
