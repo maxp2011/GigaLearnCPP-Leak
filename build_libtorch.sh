@@ -44,19 +44,51 @@ if command -v apt-get &>/dev/null; then
     fi
 fi
 
-# NCCL: MUST use system lib - building from source hits compute_125 (unsupported by CUDA 12.9 nvcc)
-# Require libnccl-dev; install with: sudo apt install libnccl-dev libnccl2
+# Patch PyTorch to remove 12.0a (compute_125) - CUDA 12.9 nvcc does not support it
+# This fixes NCCL build and all CUDA compilation regardless of USE_SYSTEM_NCCL
+SELECT_ARCH="cmake/Modules_CUDA_fix/upstream/FindCUDA/select_compute_arch.cmake"
+if [ -f "$SELECT_ARCH" ] && ! grep -q "CUDA 12.9 nvcc" "$SELECT_ARCH" 2>/dev/null; then
+    echo "Patching select_compute_arch.cmake to remove 12.0a (compute_125)..."
+    python3 << 'PYEOF'
+import re
+path = "cmake/Modules_CUDA_fix/upstream/FindCUDA/select_compute_arch.cmake"
+with open(path) as f:
+    content = f.read()
+if "CUDA 12.9 nvcc" in content:
+    print("Patch already applied")
+else:
+    # Match: list(APPEND CUDA_ALL_GPU_ARCHITECTURES "12.0a") followed by if(NOT CUDA_VERSION...
+    pat = r'( list\(APPEND CUDA_ALL_GPU_ARCHITECTURES "12\.0a"\))\n( if\(NOT CUDA_VERSION VERSION_LESS "13\.0")'
+    insert = r'''\1
+ # CUDA 12.9 nvcc does not support compute_125 (12.0a)
+ if(CUDA_VERSION VERSION_LESS "13.0")
+   list(REMOVE_ITEM CUDA_COMMON_GPU_ARCHITECTURES "12.0a")
+   list(REMOVE_ITEM CUDA_ALL_GPU_ARCHITECTURES "12.0a")
+ endif()
+\2'''
+    new_content, n = re.subn(pat, insert, content)
+    if n > 0:
+        with open(path, 'w') as f:
+            f.write(new_content)
+        print("Patched select_compute_arch.cmake")
+    else:
+        print("Patch skipped (pattern not found)")
+PYEOF
+fi
+
+# Prefer system NCCL when available
+NCCL_OPTS=""
 _has_nccl=false
 dpkg -l libnccl-dev 2>/dev/null | grep -q 'ii.*libnccl-dev' && _has_nccl=true
 pkg-config --exists nccl 2>/dev/null && _has_nccl=true
 [ -f /usr/include/nccl.h ] 2>/dev/null && _has_nccl=true
 [ -f /usr/include/x86_64-linux-gnu/nccl.h ] 2>/dev/null && _has_nccl=true
-if [ "$_has_nccl" != "true" ]; then
-    echo "ERROR: libnccl-dev is required. Install with: sudo apt install libnccl-dev libnccl2"
-    echo "Add NVIDIA repo if needed: https://developer.download.nvidia.com/compute/cuda/repos/"
-    exit 1
+if [ "$_has_nccl" = "true" ]; then
+    echo "Using system NCCL"
+    NCCL_OPTS="-DUSE_SYSTEM_NCCL=ON -DNCCL_ROOT=/usr"
+else
+    echo "No system NCCL - will build from source (patched to remove compute_125)"
 fi
-echo "Using system NCCL"
 
 # Configure and build - MUST clear build dir so cmake reconfigures with USE_SYSTEM_NCCL=ON
 echo "Configuring (cmake)..."
@@ -83,8 +115,7 @@ cmake .. -G Ninja \
     -DUSE_NUMA=OFF \
     -DCUDAToolkit_ROOT="$CUDA_ROOT" \
     -DTORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
-    -DUSE_SYSTEM_NCCL=ON \
-    -DNCCL_ROOT=/usr \
+    $NCCL_OPTS \
     $CMAKE_CUDA
 
 echo "Building (30-90 min)..."
