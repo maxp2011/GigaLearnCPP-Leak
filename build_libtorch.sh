@@ -13,8 +13,15 @@ PYTORCH_SRC="${PYTORCH_SRC:-$ROOT/pytorch-src}"
 PYTORCH_REPO="${PYTORCH_REPO:-https://github.com/pytorch/pytorch.git}"
 PYTORCH_BRANCH="${PYTORCH_BRANCH:-main}"
 
-# sm_120 = RTX 5090; compute_125 NOT supported by CUDA 12.9 - force correct list
-export TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;9.0a;12.0"
+# sm_120 = RTX 5090; compute_125 (12.5) NOT supported by CUDA 12.9 nvcc - enforce valid list
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6;8.9;9.0;9.0a;12.0}"
+# Strip 12.5/compute_125 - CUDA 12.9 nvcc does not support it
+TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST//12.5/}"
+TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST//;;/;}"
+TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST#;}"
+TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST%;}"
+[ -z "$TORCH_CUDA_ARCH_LIST" ] && TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;9.0a;12.0"
+export TORCH_CUDA_ARCH_LIST
 
 echo "=== Building LibTorch from source (sm_120 for RTX 5090) ==="
 echo "  Install dir: $INSTALL_DIR"
@@ -95,7 +102,7 @@ pkg-config --exists nccl 2>/dev/null && _has_nccl=true
 [ -f /usr/lib/x86_64-linux-gnu/libnccl.so ] 2>/dev/null && _has_nccl=true
 [ -f /usr/lib64/libnccl.so ] 2>/dev/null && _has_nccl=true
 if [ "$_has_nccl" = "true" ]; then
-    echo "Using system NCCL"
+    echo "Using system NCCL (libnccl-dev)"
     _nccl_inc="/usr/include"
     [ -f /usr/include/x86_64-linux-gnu/nccl.h ] 2>/dev/null && _nccl_inc="/usr/include/x86_64-linux-gnu"
     _nccl_lib="/usr/lib/x86_64-linux-gnu"
@@ -104,32 +111,67 @@ if [ "$_has_nccl" = "true" ]; then
 else
     echo "No system NCCL - will build from source (patched to remove compute_125)"
 fi
+echo "  NCCL_OPTS: ${NCCL_OPTS:-<none>}"
 
 # Configure and build - MUST clear build dir so cmake reconfigures with USE_SYSTEM_NCCL=ON
 echo "Configuring (cmake)..."
 rm -rf build
 echo "  (cleared build dir for fresh config)"
 
-# Ensure NCCL source exists before cmake (required when not using system NCCL)
-if [ "$_has_nccl" != "true" ]; then
-    if [ ! -f "third_party/nccl/Makefile" ] 2>/dev/null; then
-        echo "Cloning NCCL (required for build)..."
-        rm -rf third_party/nccl 2>/dev/null || true
-        mkdir -p third_party
-        git clone --depth 1 https://github.com/NVIDIA/nccl.git third_party/nccl || { echo "ERROR: NCCL clone failed. Try: sudo apt install libnccl-dev"; exit 1; }
-    fi
-    [ -f "third_party/nccl/Makefile" ] || { echo "ERROR: third_party/nccl missing. Install libnccl-dev or check network."; exit 1; }
+# Ensure third_party/nccl exists - cmake requires it even when USE_SYSTEM_NCCL=ON (PyTorch bug/workaround)
+if [ ! -f "third_party/nccl/Makefile" ] 2>/dev/null; then
+    echo "Cloning NCCL (required by cmake)..."
+    rm -rf third_party/nccl 2>/dev/null || true
+    mkdir -p third_party
+    git clone --depth 1 https://github.com/NVIDIA/nccl.git third_party/nccl || { echo "ERROR: NCCL clone failed"; exit 1; }
 fi
+[ -f "third_party/nccl/Makefile" ] || { echo "ERROR: third_party/nccl missing"; exit 1; }
 
-# Patch nccl.cmake to strip compute_125 - MUST run right before cmake
+# Patch nccl.cmake: (1) add DOWNLOAD_COMMAND when NCCL source missing, (2) strip compute_125
 NCCL_CMAKE="cmake/External/nccl.cmake"
 PATCH_FILE="$ROOT/patches/nccl-remove-compute-125.patch"
-if [ -f "$NCCL_CMAKE" ] && ! grep -q 'REGEX REPLACE.*compute_125' "$NCCL_CMAKE" 2>/dev/null; then
-    echo "Patching nccl.cmake to strip compute_125 from NVCC_GENCODE..."
-    if [ -f "$PATCH_FILE" ] && git apply -p1 --check < "$PATCH_FILE" 2>/dev/null; then
-        git apply -p1 < "$PATCH_FILE" && echo "  Applied via git apply"
-    else
-        python3 << 'PYNCCL'
+if [ -f "$NCCL_CMAKE" ]; then
+    # Add DOWNLOAD_COMMAND so cmake clones NCCL when third_party/nccl is empty (fixes ExternalProject error)
+    if ! grep -q 'NCCL_DOWNLOAD_CMD' "$NCCL_CMAKE" 2>/dev/null; then
+        echo "Patching nccl.cmake to add DOWNLOAD_COMMAND for missing NCCL source..."
+        python3 << 'PYDOWNLOAD'
+path = 'cmake/External/nccl.cmake'
+with open(path) as f:
+    content = f.read()
+# Insert before "set(__NCCL_BUILD_DIR" - add conditional download command
+marker = 'set(__NCCL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/nccl")'
+insert = '''set(__NCCL_SRC_DIR "${PROJECT_SOURCE_DIR}/third_party/nccl")
+if(NOT EXISTS "${__NCCL_SRC_DIR}/Makefile")
+  find_package(Git QUIET REQUIRED)
+  set(__NCCL_DOWNLOAD_CMD
+    ${CMAKE_COMMAND} -E make_directory ${PROJECT_SOURCE_DIR}/third_party
+    COMMAND ${GIT_EXECUTABLE} clone --depth 1 https://github.com/NVIDIA/nccl.git ${__NCCL_SRC_DIR}
+  )
+else()
+  set(__NCCL_DOWNLOAD_CMD ${CMAKE_COMMAND} -E echo "NCCL source exists")
+endif()
+
+'''
+if marker in content and 'NCCL_DOWNLOAD_CMD' not in content:
+    content = content.replace(marker, insert + marker)
+    # Insert DOWNLOAD_COMMAND into ExternalProject_Add (before SOURCE_DIR)
+    import re
+    ep_pat = r'(ExternalProject_Add\(nccl_external\s*\n)(\s*)(SOURCE_DIR \$\{PROJECT_SOURCE_DIR\}/third_party/nccl)'
+    content = re.sub(ep_pat, r'\1\2DOWNLOAD_COMMAND ${__NCCL_DOWNLOAD_CMD}\n\2\3', content, count=1)
+    with open(path, 'w') as f:
+        f.write(content)
+    print('  Added DOWNLOAD_COMMAND to nccl.cmake')
+else:
+    print('  DOWNLOAD_COMMAND patch skipped (already applied or marker not found)')
+PYDOWNLOAD
+    fi
+    # Strip compute_125 from NVCC_GENCODE (CUDA 12.9 nvcc does not support it)
+    if ! grep -q 'REGEX REPLACE.*compute_125' "$NCCL_CMAKE" 2>/dev/null; then
+        echo "Patching nccl.cmake to strip compute_125 from NVCC_GENCODE..."
+        if [ -f "$PATCH_FILE" ] && git apply -p1 --check < "$PATCH_FILE" 2>/dev/null; then
+            git apply -p1 < "$PATCH_FILE" && echo "  Applied via git apply"
+        else
+            python3 << 'PYNCCL'
 import sys
 path = 'cmake/External/nccl.cmake'
 with open(path) as f:
@@ -149,6 +191,7 @@ with open(path, 'w') as f:
     f.writelines(out)
 print('Patched nccl.cmake (Python fallback)')
 PYNCCL
+        fi
     fi
 fi
 
@@ -187,7 +230,9 @@ CUDA_ROOT="${CUDA_HOME:-}"
 CMAKE_CUDA=""
 [ -n "$CUDA_ROOT" ] && CMAKE_CUDA="-DCUDA_TOOLKIT_ROOT_DIR=$CUDA_ROOT"
 
+# Put USE_SYSTEM_NCCL first so it's not overridden by defaults
 cmake .. -G Ninja \
+    $NCCL_OPTS \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
     -DBUILD_PYTHON=OFF \
@@ -200,7 +245,6 @@ cmake .. -G Ninja \
     -DUSE_NUMA=OFF \
     -DCUDAToolkit_ROOT="$CUDA_ROOT" \
     -DTORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
-    $NCCL_OPTS \
     $CMAKE_CUDA
 
 # Post-cmake: strip compute_125 from generated build files (belt-and-suspenders; NCCL Makefile patch is primary)
