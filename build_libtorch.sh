@@ -85,16 +85,22 @@ else:
 PYEOF
 fi
 
-# Prefer system NCCL when available
+# Prefer system NCCL when available (avoids NCCL build + compute_125 issues)
 NCCL_OPTS=""
 _has_nccl=false
-dpkg -l libnccl-dev 2>/dev/null | grep -q 'ii.*libnccl-dev' && _has_nccl=true
+dpkg -s libnccl-dev &>/dev/null && _has_nccl=true
 pkg-config --exists nccl 2>/dev/null && _has_nccl=true
 [ -f /usr/include/nccl.h ] 2>/dev/null && _has_nccl=true
 [ -f /usr/include/x86_64-linux-gnu/nccl.h ] 2>/dev/null && _has_nccl=true
+[ -f /usr/lib/x86_64-linux-gnu/libnccl.so ] 2>/dev/null && _has_nccl=true
+[ -f /usr/lib64/libnccl.so ] 2>/dev/null && _has_nccl=true
 if [ "$_has_nccl" = "true" ]; then
     echo "Using system NCCL"
-    NCCL_OPTS="-DUSE_SYSTEM_NCCL=ON -DNCCL_ROOT=/usr"
+    _nccl_inc="/usr/include"
+    [ -f /usr/include/x86_64-linux-gnu/nccl.h ] 2>/dev/null && _nccl_inc="/usr/include/x86_64-linux-gnu"
+    _nccl_lib="/usr/lib/x86_64-linux-gnu"
+    [ -d /usr/lib64 ] 2>/dev/null && _nccl_lib="/usr/lib64"
+    NCCL_OPTS="-DUSE_SYSTEM_NCCL=ON -DNCCL_ROOT=/usr -DNCCL_INCLUDE_DIR=$_nccl_inc -DNCCL_LIB_DIR=$_nccl_lib"
 else
     echo "No system NCCL - will build from source (patched to remove compute_125)"
 fi
