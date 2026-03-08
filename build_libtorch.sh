@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build LibTorch from source with sm_120 (RTX 5090 / Blackwell) support.
-# Requires: CUDA 12.8+, git, cmake, ninja, python3, pip.
+# Requires: CUDA 12.9, git, cmake, ninja, python3, pip.
 # Usage: ./build_libtorch.sh [install_dir]
 # Output: libtorch in $ROOT/libtorch or $1
 #
@@ -96,37 +96,53 @@ rm -rf build
 echo "  (cleared build dir for fresh config)"
 
 # Patch nccl.cmake to strip compute_125 - MUST run right before cmake
-# CUDA 12.9 nvcc does not support compute_125; NCCL gets NVCC_GENCODE from torch_cuda_get_nvcc_gencode_flag
 NCCL_CMAKE="cmake/External/nccl.cmake"
-if [ -f "$NCCL_CMAKE" ] && ! grep -q "strip compute_125" "$NCCL_CMAKE" 2>/dev/null; then
+PATCH_FILE="$ROOT/patches/nccl-remove-compute-125.patch"
+if [ -f "$NCCL_CMAKE" ] && ! grep -q 'REGEX REPLACE.*compute_125' "$NCCL_CMAKE" 2>/dev/null; then
     echo "Patching nccl.cmake to strip compute_125 from NVCC_GENCODE..."
-    python3 -c "
+    if [ -f "$PATCH_FILE" ] && git apply -p1 --check < "$PATCH_FILE" 2>/dev/null; then
+        git apply -p1 < "$PATCH_FILE" && echo "  Applied via git apply"
+    else
+        python3 << 'PYNCCL'
+import sys
 path = 'cmake/External/nccl.cmake'
 with open(path) as f:
     lines = f.readlines()
-out = []
-done = False
-for i, line in enumerate(lines):
+out, done = [], False
+for line in lines:
     out.append(line)
     if not done and ';-gencode' in line and 'NVCC_GENCODE' in line and 'REGEX' not in line:
         indent = line[:len(line) - len(line.lstrip())]
         out.append(indent + '# CUDA 12.9 nvcc does not support compute_125 - strip it\n')
-        out.append(indent + 'string(REGEX REPLACE \" -gencode=arch=compute_125,code=sm_125\" \"\" NVCC_GENCODE \"\${NVCC_GENCODE}\")\n')
-        out.append(indent + 'string(REGEX REPLACE \"-gencode=arch=compute_125,code=sm_125\" \"\" NVCC_GENCODE \"\${NVCC_GENCODE}\")\n')
+        out.append(indent + 'string(REGEX REPLACE " -gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")\n')
+        out.append(indent + 'string(REGEX REPLACE "-gencode=arch=compute_125,code=sm_125" "" NVCC_GENCODE "${NVCC_GENCODE}")\n')
         done = True
 if not done:
-    raise SystemExit('ERROR: nccl.cmake patch failed - target line not found')
+    sys.exit('ERROR: nccl.cmake patch failed - target line not found')
 with open(path, 'w') as f:
     f.writelines(out)
-print('Patched nccl.cmake')
-"
+print('Patched nccl.cmake (Python fallback)')
+PYNCCL
+    fi
+fi
+
+# Patch NCCL Makefile to filter compute_125 at build time (belt-and-suspenders - cmake patch may not take effect)
+# CUDA 12.9 nvcc does not support compute_125; override NVCC_GENCODE when make runs
+NCCL_MAKEFILE="third_party/nccl/Makefile"
+if [ -f "$NCCL_MAKEFILE" ] && ! grep -q "filter compute_125 at build time" "$NCCL_MAKEFILE" 2>/dev/null; then
+    echo "Patching NCCL Makefile to filter compute_125 from NVCC_GENCODE..."
+    _line1='# CUDA 12.9 nvcc does not support compute_125 - filter at build time'
+    _line2="override NVCC_GENCODE := \$(shell echo '\$(NVCC_GENCODE)' | sed 's/ -gencode=arch=compute_125,code=sm_125//g' | sed 's/-gencode=arch=compute_125,code=sm_125//g')"
+    { echo "$_line1"; echo "$_line2"; cat "$NCCL_MAKEFILE"; } > "${NCCL_MAKEFILE}.tmp" && mv "${NCCL_MAKEFILE}.tmp" "$NCCL_MAKEFILE"
+    echo "  Patched NCCL Makefile"
 fi
 
 mkdir -p build
 cd build
-# CUDA path
+# CUDA 12.9 path (set CUDA_HOME if you have multiple CUDA installs)
 CUDA_ROOT="${CUDA_HOME:-}"
 [ -z "$CUDA_ROOT" ] && [ -d /usr/local/cuda ] && CUDA_ROOT=/usr/local/cuda
+[ -n "$CUDA_ROOT" ] && echo "  CUDA: $CUDA_ROOT ($(nvcc --version 2>/dev/null | grep release | sed 's/.*release //;s/,.*//' || echo 'version unknown'))"
 CMAKE_CUDA=""
 [ -n "$CUDA_ROOT" ] && CMAKE_CUDA="-DCUDA_TOOLKIT_ROOT_DIR=$CUDA_ROOT"
 
@@ -146,14 +162,36 @@ cmake .. -G Ninja \
     $NCCL_OPTS \
     $CMAKE_CUDA
 
-# Post-cmake: strip compute_125 from NCCL build in ninja files (fallback if cmake patch failed)
-# CUDA 12.9 nvcc does not support compute_125
-for f in build.ninja rules.ninja; do
-  if [ -f "$f" ] && grep -q "compute_125" "$f" 2>/dev/null; then
-    sed -i 's/ -gencode=arch=compute_125,code=sm_125//g; s/-gencode=arch=compute_125,code=sm_125//g' "$f"
-    echo "Stripped compute_125 from $f"
-  fi
-done
+# Post-cmake: strip compute_125 from generated build files (belt-and-suspenders; NCCL Makefile patch is primary)
+echo "Stripping compute_125 from build files..."
+python3 << 'PYSTRIP'
+import os, re
+patterns = [
+    (r'\s*-gencode=arch=compute_125,code=sm_125', ''),  # any whitespace before
+    (r' -gencode=arch=compute_125,code=sm_125', ''),
+    (r'-gencode=arch=compute_125,code=sm_125', ''),
+]
+count = 0
+for root, _, files in os.walk('.'):
+    for n in files:
+        if n.endswith(('.o', '.a', '.so', '.dylib')): continue
+        p = os.path.join(root, n)
+        try:
+            with open(p, 'r', errors='ignore') as f:
+                s = f.read()
+            if 'compute_125' not in s: continue
+            orig = s
+            for pat, repl in patterns:
+                s = re.sub(pat, repl, s)
+            if s != orig:
+                with open(p, 'w') as f:
+                    f.write(s)
+                print('  Patched:', p)
+                count += 1
+        except Exception:
+            pass
+print('Stripped compute_125 from', count, 'file(s)' if count else '(none found)')
+PYSTRIP
 
 echo "Building (30-90 min)..."
 ninja -j"$(nproc 2>/dev/null || echo 8)"

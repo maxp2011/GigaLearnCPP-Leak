@@ -53,6 +53,21 @@ rm libtorch-*.zip
 
 LibTorch must end up at `./libtorch` (or `./GigaLearnCPP/libtorch`).
 
+### RTX 5090 / Blackwell (sm_120) – build LibTorch from source
+
+Pre-built LibTorch does not include sm_120 kernels. On RTX 5090 you'll see "no kernel image is available for execution on the device". Build LibTorch from source:
+
+```bash
+cd /workspace/GigaLearnCPP-Leak
+# Optional: sudo apt install -y libnccl-dev libnccl2  # avoids NCCL build + compute_125 fix
+chmod +x build_libtorch.sh
+./build_libtorch.sh   # 30–90 min, needs CUDA 12.9
+export LIBTORCH_PATH=$(pwd)/libtorch
+./build.sh
+```
+
+Requires: CUDA 12.9, git, cmake, ninja. The script clones PyTorch and builds with `TORCH_CUDA_ARCH_LIST` including 12.0 (RTX 5090). If `libnccl-dev` is installed, system NCCL is used (recommended). Otherwise the script patches PyTorch to remove compute_125 from the NCCL build (unsupported by CUDA 12.9 nvcc).
+
 ## 3. Install build deps (Ubuntu)
 
 ```bash
