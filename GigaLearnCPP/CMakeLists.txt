@@ -85,6 +85,7 @@ if(GIGL_USE_REDIS)
 		GIT_TAG v1.3.0
 	)
 	set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+	set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "Required for linking into shared lib" FORCE)
 	FetchContent_MakeAvailable(hiredis)
 	target_compile_definitions(GigaLearnCPP PRIVATE GIGL_REDIS)
 	target_link_libraries(GigaLearnCPP PRIVATE hiredis)
