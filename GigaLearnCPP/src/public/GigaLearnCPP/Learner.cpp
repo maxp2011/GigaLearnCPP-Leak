@@ -28,6 +28,10 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 	// Set Python home so embedded interpreter finds stdlib (_ctypes, etc.) and site-packages
 	std::filesystem::path pyExecPath(PY_EXEC_PATH);
 	std::filesystem::path pyHome = pyExecPath.parent_path();
+	// For venv: executable is in .../venv/bin/, use venv root (parent of bin) as PYTHONHOME
+	if (pyHome.filename() == "bin") {
+		pyHome = pyHome.parent_path();
+	}
 #if defined(_WIN32)
 	Py_SetPythonHome(pyHome.c_str());
 #else
