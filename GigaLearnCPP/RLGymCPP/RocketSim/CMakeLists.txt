@@ -1,4 +1,4 @@
-﻿cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.8)
 
 project("RocketSim")
 
@@ -10,5 +10,6 @@ file(GLOB_RECURSE FILES_BULLET "${PROJECT_SOURCE_DIR}/libsrc/bullet3-3.24/*.cpp"
 
 add_library(RocketSim ${FILES_ROCKETSIM} ${FILES_BULLET})
 
+set_target_properties(RocketSim PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set_target_properties(RocketSim PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(RocketSim PROPERTIES CXX_STANDARD 20)

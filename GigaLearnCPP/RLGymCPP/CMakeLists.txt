@@ -1,4 +1,4 @@
-﻿cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.8)
 
 project("RLGymCPP")
 
@@ -6,6 +6,7 @@ project("RLGymCPP")
 file(GLOB_RECURSE FILES_SRC "src/*.cpp" "src/*.h")
 add_library(RLGymCPP STATIC ${FILES_SRC})
 target_include_directories(RLGymCPP PUBLIC "src/")
+set_target_properties(RLGymCPP PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Set C++ version to 20
 set_target_properties(RLGymCPP PROPERTIES LINKER_LANGUAGE CXX)
