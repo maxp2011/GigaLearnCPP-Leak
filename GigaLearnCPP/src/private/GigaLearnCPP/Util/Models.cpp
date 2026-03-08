@@ -30,7 +30,7 @@ GGL::Model::Model(
 
 	register_module("seq", seq);
 	seq->to(device);
-	optim = MakeOptimizer(config.optimType, this->parameters(), 0);
+	optim = MakeOptimizer(config.optimType, this->parameters(), 0, config.weightDecay);
 }
 
 torch::Tensor GGL::Model::Forward(torch::Tensor input, bool halfPrec) {
@@ -116,14 +116,22 @@ void GGL::Model::Load(std::filesystem::path folder, bool allowNotExist, bool loa
 	if (!streamIn.good())
 		RG_ERR_CLOSE("Failed to load from " << path << ", file does not exist or can't be accessed");
 
+	// Check file size - empty/truncated files cause "failed finding central directory"
+	std::ifstream sizeCheck(path, std::ios::binary | std::ios::ate);
+	auto fileSize = sizeCheck.tellg();
+	sizeCheck.close();
+	if (fileSize <= 0)
+		RG_ERR_CLOSE("Checkpoint file is empty or unreadable: " << path << " (size=" << (int64_t)fileSize << " bytes). File may be corrupt or incomplete.");
+
 	auto sizesBefore = GetSeqSizes(seq);
 
 	try {
 		torch::load(this->seq, streamIn, device);
 	} catch (std::exception& e) {
 		RG_ERR_CLOSE(
-			"Failed to load model \"" << modelName << ", checkpoint may be corrupt or of different model arch.\n" <<
-			"Exception: " << e.what()
+			"Failed to load model \"" << modelName << "\" from " << path << " - checkpoint may be corrupt or of different model arch.\n" <<
+			"Exception: " << e.what() << "\n" <<
+			"Tip: Ensure the path points to a folder containing POLICY.lt (from a GigaLearnCPP save). Python .pt checkpoints are not compatible."
 		);
 	}
 

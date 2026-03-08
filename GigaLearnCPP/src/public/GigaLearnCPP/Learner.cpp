@@ -6,6 +6,8 @@
 #include <torch/cuda.h>
 #include <nlohmann/json.hpp>
 #include <pybind11/embed.h>
+#include <Python.h>
+#include <filesystem>
 
 #ifdef RG_CUDA_SUPPORT
 #include <c10/cuda/CUDACachingAllocator.h>
@@ -23,6 +25,14 @@ using namespace RLGC;
 GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbackFn stepCallback) :
 	envCreateFn(envCreateFn), config(config), stepCallback(stepCallback)
 {
+	// Set Python home so embedded interpreter finds stdlib (_ctypes, etc.) and site-packages
+	std::filesystem::path pyExecPath(PY_EXEC_PATH);
+	std::filesystem::path pyHome = pyExecPath.parent_path();
+#if defined(_WIN32)
+	Py_SetPythonHome(pyHome.c_str());
+#else
+	Py_SetPythonHome(pyHome.string().c_str());
+#endif
 	pybind11::initialize_interpreter();
 
 #ifndef NDEBUG
@@ -69,6 +79,9 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 				"Make sure your libtorch comes with CUDA support, and that CUDA is installed properly."
 			)
 		device = at::Device(at::kCUDA);
+		// High-speed CUDA optimizations
+		torch::globalContext().setBenchmarkCuDNN(true);  // Faster kernel selection (benchmark mode)
+		at::globalContext().setAllowTF32CuBLAS(true);   // TF32 matmuls on Ampere+ GPUs (2–4x faster)
 	} else {
 		RG_LOG("\tUsing CPU device...");
 		device = at::Device(at::kCPU);
@@ -83,7 +96,7 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 		RG_LOG("\tCreating envs...");
 		EnvSetConfig envSetConfig = {};
 		envSetConfig.envCreateFn = envCreateFn;
-		envSetConfig.numArenas = config.renderMode ? 1 : config.numGames;
+		envSetConfig.numArenas = config.renderMode ? (config.renderArenaIndex + 1) : config.numGames;
 		envSetConfig.tickSkip = config.tickSkip;
 		envSetConfig.actionDelay = config.actionDelay;
 		envSetConfig.saveRewards = config.addRewardsToMetrics;
@@ -98,7 +111,11 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 		} else {
 			this->returnStat = NULL;
 		}
-
+		if (config.useRewardNorm) {
+			this->rewardStat = new WelfordStat();
+		} else {
+			this->rewardStat = NULL;
+		}
 		if (config.standardizeObs) {
 			this->obsStat = new BatchedWelfordStat(obsSize);
 		} else {
@@ -133,7 +150,7 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 		versionMgr = NULL;
 	}
 
-	if (!config.checkpointFolder.empty())
+	if (!config.checkpointFolder.empty() && config.loadCheckpoint)
 		Load();
 
 	if (config.savePolicyVersions && !config.renderMode) {
@@ -143,7 +160,7 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 		versionMgr->LoadVersions(models, totalTimesteps);
 	}
 
-	if (config.sendMetrics && !config.renderMode) {
+	if (config.sendMetrics) {
 		if (!runID.empty())
 			RG_LOG("\tRun ID: " << runID);
 		metricSender = new MetricSender(config.metricsProjectName, config.metricsGroupName, config.metricsRunName, runID);
@@ -172,6 +189,8 @@ void GGL::Learner::SaveStats(std::filesystem::path path) {
 
 	if (returnStat)
 		j["return_stat"] = returnStat->ToJSON();
+	if (rewardStat)
+		j["reward_stat"] = rewardStat->ToJSON();
 	if (obsStat)
 		j["obs_stat"] = obsStat->ToJSON();
 
@@ -201,6 +220,8 @@ void GGL::Learner::LoadStats(std::filesystem::path path) {
 
 	if (returnStat)
 		returnStat->ReadFromJSON(j["return_stat"]);
+	if (rewardStat && j.contains("reward_stat"))
+		rewardStat->ReadFromJSON(j["reward_stat"]);
 	if (obsStat)
 		obsStat->ReadFromJSON(j["obs_stat"]);
 
@@ -259,10 +280,33 @@ void GGL::Learner::Load() {
 
 	if (highest != -1) {
 		std::filesystem::path loadFolder = config.checkpointFolder / std::to_string(highest);
+		// Fallback: check nested folder (e.g. 10610119316/10610119316/) if flat structure has no model
+		std::filesystem::path nestedFolder = loadFolder / std::to_string(highest);
+		if (std::filesystem::exists(nestedFolder / "POLICY.lt") && !std::filesystem::exists(loadFolder / "POLICY.lt"))
+			loadFolder = nestedFolder;
 		RG_LOG(" > Loading checkpoint " << loadFolder << "...");
-		LoadStats(loadFolder / STATS_FILE_NAME);
-		ppo->LoadFrom(loadFolder);
-		RG_LOG(" > Done.");
+		std::filesystem::path statsPath = loadFolder / STATS_FILE_NAME;
+		if (std::filesystem::exists(statsPath)) {
+			try {
+				LoadStats(statsPath);
+			} catch (std::exception& e) {
+				RG_LOG(" > Warning: Could not load stats: " << e.what());
+			}
+		} else {
+			RG_LOG(" > (No RUNNING_STATS.json, skipping stats)");
+		}
+		try {
+			ppo->LoadFrom(loadFolder);
+			RG_LOG(" > Done.");
+		} catch (std::exception& e) {
+			std::string msg = e.what();
+			if (msg.find("different model arch") != std::string::npos || msg.find("No such serialized") != std::string::npos) {
+				RG_LOG(" > Checkpoint architecture mismatch (saved with different model config). Starting fresh.");
+				RG_LOG(" > Use --no-load-checkpoint to skip loading explicitly.");
+			} else {
+				RG_ERR_CLOSE("Failed to load model: " << e.what());
+			}
+		}
 	} else {
 		RG_LOG(" > No checkpoints found, starting new model.")
 	}
@@ -328,6 +372,7 @@ void GGL::Learner::StartTransferLearn(const TransferLearnConfig& tlConfig) {
 		RG_NO_GRAD;
 		PPOLearner::MakeModels(false, oldObsSize, oldNumActions, tlConfig.oldSharedHeadConfig, tlConfig.oldPolicyConfig, {}, ppo->device, oldModels);
 
+		RG_LOG("Loading teacher model from: " << std::filesystem::absolute(tlConfig.oldModelsPath));
 		oldModels.Load(tlConfig.oldModelsPath, false, false);
 	}
 
@@ -461,6 +506,16 @@ void GGL::Learner::StartTransferLearn(const TransferLearnConfig& tlConfig) {
 
 void GGL::Learner::Start() {
 
+	if (config.distributed.enabled) {
+		if (config.distributed.isLearner)
+			StartDistributedLearner();
+		else if (config.distributed.isWorker)
+			StartDistributedWorker();
+		else
+			RG_ERR_CLOSE("Distributed enabled but neither --learner nor --worker specified");
+		return;
+	}
+
 	bool render = config.renderMode;
 
 	RG_LOG("Learner::Start():");
@@ -475,7 +530,7 @@ void GGL::Learner::Start() {
 		std::thread keyPressThread;
 		StartQuitKeyThread(saveQueued, keyPressThread);
 
-		ExperienceBuffer experience = ExperienceBuffer(config.randomSeed, torch::kCPU);
+		ExperienceBuffer experience = ExperienceBuffer(config.randomSeed, ppo->device);
 
 		int numPlayers = envSet->state.numPlayers;
 
@@ -572,7 +627,13 @@ void GGL::Learner::Start() {
 					float inferTime = 0;
 					float envStepTime = 0;
 
+					if (!render) {
+						std::cout << "  Collecting timesteps (target: " << config.ppo.tsPerItr << ")...\n" << std::flush;
+					}
+
 					for (int step = 0; combinedTraj.Length() < config.ppo.tsPerItr || render; step++, stepsCollected += numRealPlayers) {
+						if (!render && (step <= 2 || step % 25 == 0))
+							std::cout << "  Step " << step << " | " << combinedTraj.Length() << "/" << config.ppo.tsPerItr << " timesteps\n" << std::flush;
 						Timer stepTimer = {};
 						envSet->Reset();
 						envStepTime += stepTimer.Elapsed();
@@ -617,29 +678,34 @@ void GGL::Learner::Start() {
 						envSet->StepFirstHalf(true);
 
 						Timer inferTimer = {};
+						if (!render && step == 0)
+							std::cout << "  First inference (CUDA warmup may take 10-30s)...\n" << std::flush;
 
 						if (oldVersion) {
-							torch::Tensor tdNewStates = tStates.index_select(0, tNewPlayerIndices).to(ppo->device, true);
-							torch::Tensor tdOldStates = tStates.index_select(0, tOldPlayerIndices).to(ppo->device, true);
-							torch::Tensor tdNewActionMasks = tActionMasks.index_select(0, tNewPlayerIndices).to(ppo->device, true);
-							torch::Tensor tdOldActionMasks = tActionMasks.index_select(0, tOldPlayerIndices).to(ppo->device, true);
+							auto dev = ppo->device;
+							torch::Tensor tdNewStates = tStates.index_select(0, tNewPlayerIndices).to(dev, true);
+							torch::Tensor tdOldStates = tStates.index_select(0, tOldPlayerIndices).to(dev, true);
+							torch::Tensor tdNewActionMasks = tActionMasks.index_select(0, tNewPlayerIndices).to(dev, true);
+							torch::Tensor tdOldActionMasks = tActionMasks.index_select(0, tOldPlayerIndices).to(dev, true);
 
 							torch::Tensor tNewActions;
 							torch::Tensor tOldActions;
 
-							ppo->InferActions(tdNewStates, tdNewActionMasks, &tNewActions, &tLogProbs);
-							ppo->InferActions(tdOldStates, tdOldActionMasks, &tOldActions, NULL, &oldVersion->models);
+							ppo->InferActions(tdNewStates, tdNewActionMasks, &tNewActions, &tLogProbs, &oldVersion->models, render);
+							ppo->InferActions(tdOldStates, tdOldActionMasks, &tOldActions, NULL, &oldVersion->models, render);
 
-							tActions = torch::zeros(numPlayers, tNewActions.dtype());
-							tActions.index_copy_(0, tNewPlayerIndices, tNewActions.cpu());
-							tActions.index_copy_(0, tOldPlayerIndices, tOldActions.cpu());
+							// Merge on device; TENSOR_TO_VEC does single .cpu() at end
+							tActions = torch::zeros({ numPlayers }, torch::TensorOptions().dtype(tNewActions.dtype()).device(dev));
+							tActions.index_copy_(0, tNewPlayerIndices.to(dev), tNewActions);
+							tActions.index_copy_(0, tOldPlayerIndices.to(dev), tOldActions);
 						} else {
 							torch::Tensor tdStates = tStates.to(ppo->device, true);
 							torch::Tensor tdActionMasks = tActionMasks.to(ppo->device, true);
-							ppo->InferActions(tdStates, tdActionMasks, &tActions, &tLogProbs);
-							tActions = tActions.cpu();
+							ppo->InferActions(tdStates, tdActionMasks, &tActions, &tLogProbs, nullptr, render);
 						}
 						inferTime += inferTimer.Elapsed();
+						if (!render && step == 0)
+							std::cout << "  First inference done (" << (int)(inferTime * 1000) << " ms)\n" << std::flush;
 
 						auto curActions = TENSOR_TO_VEC<int>(tActions);
 						FList newLogProbs;
@@ -655,7 +721,7 @@ void GGL::Learner::Start() {
 							stepCallback(this, envSet->state.gameStates, report);
 
 						if (render) {
-							renderSender->Send(envSet->state.gameStates[0]);
+							renderSender->Send(envSet->state.gameStates[config.renderArenaIndex]);
 							continue;
 						}
 
@@ -665,7 +731,7 @@ void GGL::Learner::Start() {
 							std::unordered_map<std::string, AvgTracker> avgRewards = {};
 							for (int i = 0; i < numSamples; i++) {
 								int arenaIdx = Math::RandInt(0, envSet->arenas.size());
-								auto& prevRewards = envSet->state.lastRewards[i];
+								auto& prevRewards = envSet->state.lastRewards[arenaIdx];
 
 								for (int j = 0; j < envSet->rewards[arenaIdx].size(); j++) {
 									std::string rewardName = envSet->rewards[arenaIdx][j].reward->GetName();
@@ -749,44 +815,61 @@ void GGL::Learner::Start() {
 					
 					torch::Tensor tValPreds;
 					torch::Tensor tTruncValPreds;
+					auto dev = ppo->device;
 
-					if (ppo->device.is_cpu()) {
+					if (dev.is_cpu()) {
 						// Predict values all at once
-						tValPreds = ppo->InferCritic(tStates.to(ppo->device, true, true)).cpu();
+						tValPreds = ppo->InferCritic(tStates.to(dev, true, true));
 						if (tNextTruncStates.defined())
-							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(ppo->device, true, true)).cpu();
+							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(dev, true, true));
 					} else {
-						// Predict values using minibatching
-						tValPreds = torch::zeros({ (int64_t)combinedTraj.Length() });
+						// Predict values using minibatching; keep on GPU for CUDA GAE kernel
+						tValPreds = torch::zeros({ (int64_t)combinedTraj.Length() }, dev);
 						for (int i = 0; i < combinedTraj.Length(); i += ppo->config.miniBatchSize) {
 							int start = i;
 							int end = RS_MIN(i + ppo->config.miniBatchSize, combinedTraj.Length());
-							torch::Tensor tStatesPart = tStates.slice(0, start, end);
-
-							auto valPredsPart = ppo->InferCritic(tStatesPart.to(ppo->device, true, true)).cpu();
+							torch::Tensor tStatesPart = tStates.slice(0, start, end).to(dev, true, true);
+							auto valPredsPart = ppo->InferCritic(tStatesPart);
 							RG_ASSERT(valPredsPart.size(0) == (end - start));
 							tValPreds.slice(0, start, end).copy_(valPredsPart, true);
 						}
 
 						if (tNextTruncStates.defined()) {
-							// This really just should never happen
-							// If this is ever actually a real problem in a legitimate use case, ping Zealan in the dead of night
 							RG_ASSERT(tNextTruncStates.size(0) <= ppo->config.miniBatchSize);
-
-							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(ppo->device, true, true)).cpu();
+							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(dev, true, true));
 						}
+						// Keep on GPU for GAE CUDA kernel (no CPU round-trip)
 					}
 
 					report["Episode Length"] = 1.f / (tTerminals == 1).to(torch::kFloat32).mean().item<float>();
 
+					// rocket-learn: normalize rewards by running mean/std
+					if (rewardStat) {
+						rewardStat->Increment(TENSOR_TO_VEC<float>(tRewards));
+						float rMean = (float)rewardStat->GetMean();
+						float rStd = (float)rewardStat->GetSTD() + 1e-8f;
+						tRewards = (tRewards - rMean) / rStd;
+						if (config.ppo.rewardClipRange > 0)
+							tRewards = torch::clamp(tRewards, -config.ppo.rewardClipRange, config.ppo.rewardClipRange);
+					}
+
 					Timer gaeTimer = {};
-					// Run GAE
+					// Run GAE (when rewardStat: rewards already normalized; else use returnStat for scaling)
 					torch::Tensor tAdvantages, tTargetVals, tReturns;
 					float rewClipPortion;
+					float gaeReturnStd = rewardStat ? 0 : (returnStat ? (float)returnStat->GetSTD() : 1);
+					float gaeClipRange = rewardStat ? 0 : config.ppo.rewardClipRange;
+					// CUDA: transfer rews/terminals to GPU so GAE kernel runs entirely on device
+					torch::Tensor tRewardsGAE = tRewards;
+					torch::Tensor tTerminalsGAE = tTerminals;
+					if (dev.is_cuda()) {
+						tRewardsGAE = tRewards.to(dev, true, true);
+						tTerminalsGAE = tTerminals.to(dev, true, true);
+					}
 					GAE::Compute(
-						tRewards, tTerminals, tValPreds, tTruncValPreds,
+						tRewardsGAE, tTerminalsGAE, tValPreds, tTruncValPreds,
 						tAdvantages, tTargetVals, tReturns, rewClipPortion,
-						config.ppo.gaeGamma, config.ppo.gaeLambda, returnStat ? returnStat->GetSTD() : 1, config.ppo.rewardClipRange
+						config.ppo.gaeGamma, config.ppo.gaeLambda, gaeReturnStd, gaeClipRange
 					);
 					report["GAE Time"] = gaeTimer.Elapsed();
 					report["Clipped Reward Portion"] = rewClipPortion;
@@ -804,13 +887,13 @@ void GGL::Learner::Start() {
 					report["GAE/Avg Advantage"] = tAdvantages.abs().mean().item<float>();
 					report["GAE/Avg Val Target"] = tTargetVals.abs().mean().item<float>();
 
-					// Set experience buffer
-					experience.data.actions = tActions;
-					experience.data.logProbs = tLogProbs;
-					experience.data.actionMasks = tActionMasks;
-					experience.data.states = tStates;
-					experience.data.advantages = tAdvantages;
-					experience.data.targetValues = tTargetVals;
+					// Set experience buffer (keep on GPU when using CUDA to avoid per-batch transfers in Learn)
+					experience.data.actions = tActions.to(dev);
+					experience.data.logProbs = tLogProbs.to(dev);
+					experience.data.actionMasks = tActionMasks.to(dev);
+					experience.data.states = tStates.to(dev);
+					experience.data.advantages = tAdvantages.to(dev);
+					experience.data.targetValues = tTargetVals.to(dev);
 				}
 
 				// Free CUDA cache
@@ -863,7 +946,10 @@ void GGL::Learner::Start() {
 					{
 						"Average Step Reward",
 						"Policy Entropy",
-						"KL Div Loss",
+						"Mean KL Divergence",
+						"Policy Loss",
+						"Critic Loss",
+						"SB3 Clip Fraction",
 						"First Accuracy",
 						"",
 						"Policy Update Magnitude",
@@ -879,7 +965,7 @@ void GGL::Learner::Start() {
 						"-Env Step Time",
 						"Consumption Time",
 						"-GAE Time",
-						"-PPO Learn Time"
+						"-PPO Learn Time",
 						"",
 						"Collected Timesteps",
 						"Total Timesteps",
@@ -895,6 +981,9 @@ void GGL::Learner::Start() {
 }
 
 GGL::Learner::~Learner() {
+	delete returnStat;
+	delete rewardStat;
+	delete obsStat;
 	delete ppo;
 	delete versionMgr;
 	delete metricSender;

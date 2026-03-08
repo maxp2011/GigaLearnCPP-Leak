@@ -4,49 +4,101 @@
 #include <RLGymCPP/Rewards/ZeroSumReward.h>
 #include <RLGymCPP/TerminalConditions/NoTouchCondition.h>
 #include <RLGymCPP/TerminalConditions/GoalScoreCondition.h>
-#include <RLGymCPP/OBSBuilders/DefaultObs.h>
-#include <RLGymCPP/OBSBuilders/AdvancedObs.h>
+#include <RLGymCPP/ObsBuilders/DefaultObs.h>
+#include <RLGymCPP/ObsBuilders/AdvancedObs.h>
+#include <RLGymCPP/ObsBuilders/AdvancedObsPadded.h>
+#include <RLGymCPP/ObsBuilders/CustomObs.h>
+
+#include <algorithm>
+#include <cstring>
+#include <filesystem>
 #include <RLGymCPP/StateSetters/KickoffState.h>
 #include <RLGymCPP/StateSetters/RandomState.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
 
-using namespace GGL; // GigaLearn
-using namespace RLGC; // RLGymCPP
+using namespace GGL;
+using namespace RLGC;
+
+static bool ParseBoolArg(int argc, char* argv[], const char* flag, bool defaultValue) {
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], flag) == 0) return true;
+		std::string arg = argv[i];
+		if (arg == std::string("--no-") + (flag + 2)) return false;
+	}
+	return defaultValue;
+}
+static int ParseIntArg(int argc, char* argv[], const char* flag, int defaultValue) {
+	for (int i = 1; i < argc - 1; i++) {
+		if (strcmp(argv[i], flag) == 0) {
+			int v = std::atoi(argv[i + 1]);
+			return v > 0 ? v : defaultValue;
+		}
+	}
+	return defaultValue;
+}
+static float ParseFloatArg(int argc, char* argv[], const char* flag, float defaultValue) {
+	for (int i = 1; i < argc - 1; i++) {
+		if (strcmp(argv[i], flag) == 0)
+			return (float)std::atof(argv[i + 1]);
+	}
+	return defaultValue;
+}
+static std::string ParseStrArg(int argc, char* argv[], const char* flag, const char* defaultValue) {
+	for (int i = 1; i < argc - 1; i++) {
+		if (strcmp(argv[i], flag) == 0)
+			return argv[i + 1];
+	}
+	return defaultValue ? std::string(defaultValue) : std::string();
+}
 
 // Create the RLGymCPP environment for each of our games
 EnvCreateResult EnvCreateFunc(int index) {
-	// These are ok rewards that will produce a scoring bot in ~100m steps
 	std::vector<WeightedReward> rewards = {
+		{ new ZeroSumReward(new StrongTouchReward(20, 90), 0.f, 0.7f), 5.0f },
+		{ new ZeroSumReward(new RLGC::VelocityBallToGoalMouthReward(), 1.f, 0.7f), 50.f },
+		//{ new ZeroSumReward(new RLGC::VelocityBallToGoalReward(), 1.f, 0.7f), 50.f },
+		{ new ZeroSumReward(new RLGC::VelocityPlayerToBallReward(), 1.f, 0.7f), 3.5f },
+		{ new ZeroSumReward(new RLGC::ShieldzKORew(), 1.0f, 1.0f), 5.0f },
+		{ new ZeroSumReward(new RLGC::FlyToGoalKeepHigh(), 1.0f, 1.0f), 0.115f },
+	//	{ new ZeroSumReward(new RLGC::RipplesFlipResetFreestyleChain(), 1.f, 0.1f), 1.3f },
+		{ new ZeroSumReward(new RLGC::PickupBoostReward(), 0.f, 1.0f), 33.5f },
+		{ new RLGC::SaveBoostReward(0.5f), 1.23f },
+		{ new RLGC::RippleDemoReward(), 600.23f },
+		{ new RLGC::GoalReward(-1.f), 650.f },
+	//	{ new RLGC::ConsolidatedDemoReward(), 150.23f },
+		
+		{ new RLGC::TeamSpacingReward_MKH(1000.0f, 1.0f), 9.f },
 
-		// Movement
-		{ new AirReward(), 0.25f },
 
-		// Player-ball
-		{ new FaceBallReward(), 0.25f },
-		{ new VelocityPlayerToBallReward(), 4.f },
-		{ new StrongTouchReward(20, 100), 60 },
+		{ new SimpleFlipResetLearnReward(150.0f), 1.0f },
+        { new PopResetReward(300.0f), 1.0f},
+		
+	//	{ new RLGC::DribbleAirdribbleBumpDemoRewardv3(), 2000.23f },
 
-		// Ball-goal
-		{ new ZeroSumReward(new VelocityBallToGoalReward(), 1), 2.0f },
+		
+	//	{ new RLGC::ControlReward (), 1.f },
 
-		// Boost
-		{ new PickupBoostReward(), 10.f },
-		{ new SaveBoostReward(), 0.2f },
 
-		// Game events
-		{ new ZeroSumReward(new BumpReward(), 0.5f), 20 },
-		{ new ZeroSumReward(new DemoReward(), 0.5f), 80 },
-		{ new GoalReward(), 150 }
+	    { new RLGC::DemoBumpNearBallReward (), 200.f },
+		
+		//{ new RLGC::PopResetReward(), 350.f },
+		//{ new RLGC::SimpleResetTeachReward(), 60.f },
+		{ new RLGC::EnergyReward (), 0.0000001f },
+	
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
-		new NoTouchCondition(10),
+		new NoTouchCondition(30),
 		new GoalScoreCondition()
 	};
 
-	// Make the arena
-	int playersPerTeam = 1;
-	auto arena = Arena::Create(GameMode::SOCCAR);
+	// Soccar only. 33% 1v1, 33% 2v2, 33% 3v3.
+	// 0=Soccar1v1, 1=Soccar2v2, 2=Soccar3v3
+	int combo = index % 3;
+	GameMode gameMode = GameMode::SOCCAR;
+	int playersPerTeam = combo + 1;
+
+	auto arena = Arena::Create(gameMode);
 	for (int i = 0; i < playersPerTeam; i++) {
 		arena->AddCar(Team::BLUE);
 		arena->AddCar(Team::ORANGE);
@@ -54,7 +106,8 @@ EnvCreateResult EnvCreateFunc(int index) {
 
 	EnvCreateResult result = {};
 	result.actionParser = new DefaultAction();
-	result.obsBuilder = new AdvancedObs();
+	//result.obsBuilder = new CustomObs();
+	result.obsBuilder = new AdvancedObsPadded();
 	result.stateSetter = new KickoffState();
 	result.terminalConditions = terminalConditions;
 	result.rewards = rewards;
@@ -65,24 +118,42 @@ EnvCreateResult EnvCreateFunc(int index) {
 }
 
 void StepCallback(Learner* learner, const std::vector<GameState>& states, Report& report) {
-	// To prevent expensive metrics from eating at performance, we will only run them on 1/4th of steps
-	// This doesn't really matter unless you have expensive metrics (which this example doesn't)
-	bool doExpensiveMetrics = (rand() % 4) == 0;
+	bool doExpensiveMetrics = (rand() % 8) == 0;
+	const int maxPlayers = 2000;
+	int count = 0;
+	bool done = false;
 
-	// Add our metrics
 	for (auto& state : states) {
-		if (doExpensiveMetrics) {
-			for (auto& player : state.players) {
-				report.AddAvg("Player/In Air Ratio", !player.isOnGround);
-				report.AddAvg("Player/Ball Touch Ratio", player.ballTouchedStep);
-				report.AddAvg("Player/Demoed Ratio", player.isDemoed);
+		if (done) break;
+		for (auto& player : state.players) {
+			if (count++ >= maxPlayers) { done = true; break; }
+			report.AddAvg("Player/In Air Ratio", !player.isOnGround);
+			report.AddAvg("Player/Ball Touch Ratio", player.ballTouchedStep);
+			report.AddAvg("Player/Demoed Ratio", player.isDemoed);
+			report.AddAvg("Player/Boost", player.boost);
 
+			bool hasFlipReset = player.HasFlipReset();
+			bool gotFlipReset = player.GotFlipReset();
+			bool hasFlipOrJump = player.HasFlipOrJump();
+			report.AddAvg("Player/Has Flip Reset Ratio", hasFlipReset);
+			report.AddAvg("Player/Got Flip Reset Ratio", gotFlipReset);
+			report.AddAvg("Player/Has Flip Or Jump Ratio", hasFlipOrJump);
+			report.AddAvg("Player/Is Flipping Ratio", player.isFlipping);
+			if (player.ballTouchedStep && !player.isOnGround)
+				report.AddAvg("Player/Aerial Touch Height", state.ball.pos.z);
+
+			report.AddAvg("Player/Goal Ratio", player.eventState.goal);
+			report.AddAvg("Player/Assist Ratio", player.eventState.assist);
+			report.AddAvg("Player/Shot Ratio", player.eventState.shot);
+			report.AddAvg("Player/Save Ratio", player.eventState.save);
+			report.AddAvg("Player/Bump Ratio", player.eventState.bump);
+			report.AddAvg("Player/Bumped Ratio", player.eventState.bumped);
+			report.AddAvg("Player/Demo Ratio", player.eventState.demo);
+
+			if (doExpensiveMetrics) {
 				report.AddAvg("Player/Speed", player.vel.Length());
 				Vec dirToBall = (state.ball.pos - player.pos).Normalized();
-				report.AddAvg("Player/Speed Towards Ball", RS_MAX(0, player.vel.Dot(dirToBall)));
-
-				report.AddAvg("Player/Boost", player.boost);
-
+				report.AddAvg("Player/Speed Towards Ball", RS_MAX(0.f, player.vel.Dot(dirToBall)));
 				if (player.ballTouchedStep)
 					report.AddAvg("Player/Touch Height", state.ball.pos.z);
 			}
@@ -96,53 +167,47 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 int main(int argc, char* argv[]) {
 	// Initialize RocketSim with collision meshes
 	// Change this path to point to your meshes!
-	RocketSim::Init("C:\\Users\\admin\\source\\repos\\RLArenaCollisionDumper\\collision_meshes");
+	RocketSim::Init(R"(C:\Users\Maxph\Downloads\rl sim vis (1)\rlsimviscpp\build\yes yes yesy\RocketSim-main\collision_meshes)");
 
 	// Make configuration for the learner
 	LearnerConfig cfg = {};
 
 	cfg.deviceType = LearnerDeviceType::GPU_CUDA;
 
-	cfg.tickSkip = 8;
-	cfg.actionDelay = cfg.tickSkip - 1; // Normal value in other RLGym frameworks
+	cfg.ppo.useHalfPrecision = false;  // FP16 inference during rollout — major CUDA speedup
 
-	// Play around with this to see what the optimal is for your machine, more games will consume more RAM
-	cfg.numGames = 256;
+	cfg.tickSkip = 6;
+	cfg.actionDelay = cfg.tickSkip - 1;
 
-	// Leave this empty to use a random seed each run
-	// The random seed can have a strong effect on the outcome of a run
-	cfg.randomSeed = 123;
+	cfg.numGames = 256;  // More arenas = more steps/sec
+	cfg.randomSeed = -1;
 
-	int tsPerItr = 50'000;
+	int tsPerItr = 393216;  // 12 * 32768
 	cfg.ppo.tsPerItr = tsPerItr;
 	cfg.ppo.batchSize = tsPerItr;
-	cfg.ppo.miniBatchSize = 50'000; // Lower this if too much VRAM is being allocated
+	cfg.ppo.miniBatchSize = 65536;  // Fits 12GB GPU; 262144 OOMs
+	cfg.ppo.epochs = 5;   // Fewer epochs = faster consumption
+	cfg.ppo.entropyScale = 0.01f;   // rocket-learn ent_coef
+	cfg.ppo.gaeGamma = 0.991f;       // rocket-learn gamma
+	cfg.ppo.gaeLambda = 0.95f;      // rocket-learn gae_lambda
 
-	// Using 2 epochs seems pretty optimal when comparing time training to skill
-	// Perhaps 1 or 3 is better for you, test and find out!
-	cfg.ppo.epochs = 1;
+	cfg.ppo.policyLR = 1e-4f;       // rocket-learn/SB3 typical
+	cfg.ppo.criticLR = 1e-4f;
 
-	// This scales differently than "ent_coef" in other frameworks
-	// This is the scale for normalized entropy, which means you won't have to change it if you add more actions
-	cfg.ppo.entropyScale = 0.035f;
+	cfg.ppo.sharedHead.layerSizes = { 1024, 1024, 1024, 1024, 512 };
+	cfg.ppo.policy.layerSizes = { 1024, 1024, 1024, 1024, 512 };
+	cfg.ppo.critic.layerSizes = { 1024, 1024, 1024, 1024, 512 };
 
-	// Rate of reward decay
-	// Starting low tends to work out
-	cfg.ppo.gaeGamma = 0.99;
+	//cfg.ppo.sharedHead.layerSizes = { 1024, 1024, 1024, 1024, 512 };
+//	cfg.ppo.policy.layerSizes = { 1024, 1024, 1024, 1024, 512 };
+//	cfg.ppo.critic.layerSizes = { 1024, 1024, 1024, 1024, 512 };
 
-	// Good learning rate to start
-	cfg.ppo.policyLR = 1.5e-4;
-	cfg.ppo.criticLR = 1.5e-4;
-
-	cfg.ppo.sharedHead.layerSizes = { 256, 256 };
-	cfg.ppo.policy.layerSizes = { 256, 256, 256 };
-	cfg.ppo.critic.layerSizes = { 256, 256, 256 };
-
-	auto optim = ModelOptimType::ADAM;
+	auto optim = ModelOptimType::ADAM;  // rocket-learn / SB3 default
 	cfg.ppo.policy.optimType = optim;
 	cfg.ppo.critic.optimType = optim;
 	cfg.ppo.sharedHead.optimType = optim;
 
+	//auto activation = ModelActivationType::LEAKY_RELU;
 	auto activation = ModelActivationType::RELU;
 	cfg.ppo.policy.activationType = activation;
 	cfg.ppo.critic.activationType = activation;
@@ -153,14 +218,99 @@ int main(int argc, char* argv[]) {
 	cfg.ppo.critic.addLayerNorm = addLayerNorm;
 	cfg.ppo.sharedHead.addLayerNorm = addLayerNorm;
 
-	cfg.sendMetrics = true; // Send metrics
-	cfg.renderMode = false; // Don't render
+	cfg.skillTracker.enabled = true;
+	cfg.skillTracker.numArenas = 16;
+	cfg.skillTracker.simTime = 45.f;
+	cfg.skillTracker.updateInterval = 14;  // Less frequent = more SPS
 
-	// Make the learner with the environment creation function and the config we just made
+	cfg.addRewardsToMetrics = ParseBoolArg(argc, argv, "--add-rewards", true);
+
+	// Distributed training (multi-PC). Use --redis <host> for 3000+ workers (Redis mode)
+	cfg.distributed.enabled = ParseBoolArg(argc, argv, "--learner", false) || ParseBoolArg(argc, argv, "--worker", false);
+	cfg.distributed.isLearner = ParseBoolArg(argc, argv, "--learner", false);
+	cfg.distributed.isWorker = ParseBoolArg(argc, argv, "--worker", false);
+	cfg.distributed.learnerHost = ParseStrArg(argc, argv, "--learner-host", "127.0.0.1");
+	cfg.distributed.learnerPort = (uint16_t)ParseIntArg(argc, argv, "--learner-port", 29500);
+	cfg.distributed.localNumGames = ParseIntArg(argc, argv, "--local-games", 0);
+	cfg.distributed.weightSyncInterval = ParseIntArg(argc, argv, "--weight-sync", 1);
+	cfg.distributed.redisHost = ParseStrArg(argc, argv, "--redis", "");
+	cfg.distributed.redisPort = ParseIntArg(argc, argv, "--redis-port", 6379);
+
+	int numGamesOverride = ParseIntArg(argc, argv, "--num-games", 0);
+	if (numGamesOverride > 0)
+		cfg.numGames = numGamesOverride;
+
+	if (cfg.distributed.isLearner && cfg.distributed.localNumGames == 0)
+		cfg.numGames = 1;  // Minimal envs when workers-only
+
+	cfg.sendMetrics = ParseBoolArg(argc, argv, "--send-metrics", true);
+	cfg.renderMode = ParseBoolArg(argc, argv, "--render", false);
+	cfg.renderTimeScale = ParseFloatArg(argc, argv, "--render-timescale", 8.0f);
+	cfg.renderArenaIndex = std::clamp(ParseIntArg(argc, argv, "--render-arena", 0), 0, 2);
+
+	std::string tlPath = ParseStrArg(argc, argv, "--tl", "");
+	if (tlPath.empty())
+		tlPath = ParseStrArg(argc, argv, "--transfer-learn", "");
+	if (tlPath.empty()) {
+		// Check if --tl/--transfer-learn flag present without path → use default
+		for (int i = 1; i < argc; i++) {
+			if (strcmp(argv[i], "--tl") == 0 || strcmp(argv[i], "--transfer-learn") == 0) {
+				tlPath = R"(C:\Users\Maxph\Downloads\68374039824)";
+				break;
+			}
+		}
+	}
+	cfg.loadCheckpoint = tlPath.empty() && ParseBoolArg(argc, argv, "--load-checkpoint", true);
+
 	Learner* learner = new Learner(EnvCreateFunc, cfg, StepCallback);
 
-	// Start learning!
-	learner->Start();
+	if (!tlPath.empty()) {
+		// Transfer learn: distill from big-layer teacher to current small model
+		TransferLearnConfig tlConfig = {};
+		tlConfig.makeOldObsFn = []() { return new AdvancedObsPadded(); };
+		tlConfig.makeOldActFn = []() { return new DefaultAction(); };
+		// Old model (teacher): must match checkpoint arch (4x1024 + 512)
+		const std::vector<int> oldLayers = { 1024, 1024, 1024, 1024, 512 };
+		tlConfig.oldSharedHeadConfig.layerSizes = oldLayers;
+		tlConfig.oldSharedHeadConfig.activationType = ModelActivationType::RELU;
+		tlConfig.oldSharedHeadConfig.addLayerNorm = true;
+		tlConfig.oldSharedHeadConfig.addOutputLayer = false;
+		tlConfig.oldPolicyConfig.layerSizes = oldLayers;
+		tlConfig.oldPolicyConfig.activationType = ModelActivationType::RELU;
+		tlConfig.oldPolicyConfig.addLayerNorm = true;
+		tlConfig.oldModelsPath = tlPath;
+		tlConfig.lr = 4e-4f;
+		tlConfig.batchSize = 200000;
+		tlConfig.epochs = 5;
+		tlConfig.useKLDiv = true;
+		tlConfig.lossScale = 500.f;
+
+		// Resolve to latest checkpoint if path is a folder with numbered subdirs
+		if (std::filesystem::exists(tlPath) && std::filesystem::is_directory(tlPath)) {
+			int64_t highest = -1;
+			for (auto& entry : std::filesystem::directory_iterator(tlPath)) {
+				if (!entry.is_directory()) continue;
+				std::string name = entry.path().filename().string();
+				bool allDigits = true;
+				for (char c : name) { if (!isdigit(c)) { allDigits = false; break; } }
+				if (allDigits && !name.empty()) {
+					int64_t n = std::stoll(name);
+					highest = std::max(highest, n);
+				}
+			}
+			if (highest >= 0) {
+				std::filesystem::path loadFolder = std::filesystem::path(tlPath) / std::to_string(highest);
+				std::filesystem::path nestedFolder = loadFolder / std::to_string(highest);
+				if (std::filesystem::exists(nestedFolder / "POLICY.lt") && !std::filesystem::exists(loadFolder / "POLICY.lt"))
+					loadFolder = nestedFolder;
+				tlConfig.oldModelsPath = loadFolder;
+			}
+		}
+
+		learner->StartTransferLearn(tlConfig);
+	} else {
+		learner->Start();
+	}
 
 	return EXIT_SUCCESS;
 }

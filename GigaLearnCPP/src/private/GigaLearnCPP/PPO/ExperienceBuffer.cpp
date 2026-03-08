@@ -9,14 +9,10 @@ GGL::ExperienceBuffer::ExperienceBuffer(int seed, torch::Device device) :
 
 GGL::ExperienceTensors GGL::ExperienceBuffer::_GetSamples(const int64_t* indices, size_t size) const {
 
-	// TODO: Slow, use blob
-	Tensor tIndices = torch::tensor(IList(indices, indices + size));
+	// Indices must be on same device as data for index_select
+	Tensor tIndices = torch::tensor(IList(indices, indices + size)).to(device);
 
 	ExperienceTensors result;
-	auto fnSlice = [=](torch::Tensor t) -> torch::Tensor {
-		return torch::index_select(t, 0, tIndices);
-	};
-
 	auto* toItr = result.begin();
 	auto* fromItr = data.begin();
 	for (; toItr != result.end(); toItr++, fromItr++)

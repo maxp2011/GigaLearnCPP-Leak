@@ -113,8 +113,9 @@ void GGL::PPOLearner::InferActionsFromModels(
 	}
 }
 
-void GGL::PPOLearner::InferActions(torch::Tensor obs, torch::Tensor actionMasks, torch::Tensor* outActions, torch::Tensor* outLogProbs, ModelSet* models) {
-	InferActionsFromModels(models ? *models : this->models, obs, actionMasks, config.deterministic, config.policyTemperature, config.useHalfPrecision, outActions, outLogProbs);
+void GGL::PPOLearner::InferActions(torch::Tensor obs, torch::Tensor actionMasks, torch::Tensor* outActions, torch::Tensor* outLogProbs, ModelSet* models, bool forceDeterministic) {
+	bool useDeterministic = forceDeterministic || config.deterministic;
+	InferActionsFromModels(models ? *models : this->models, obs, actionMasks, useDeterministic, config.policyTemperature, config.useHalfPrecision, outActions, outLogProbs);
 }
 
 torch::Tensor GGL::PPOLearner::InferCritic(torch::Tensor obs) {
@@ -125,38 +126,42 @@ torch::Tensor GGL::PPOLearner::InferCritic(torch::Tensor obs) {
 	return models["critic"]->Forward(obs, config.useHalfPrecision).flatten();
 }
 
+// rocket-learn 1:1: raw entropy -sum(p*log(p)), no normalization. ent_coef applied in loss.
 torch::Tensor ComputeEntropy(torch::Tensor probs, torch::Tensor actionMasks, bool maskEntropy) {
-	// Compute log probs and entropy
-	auto entropy = -(probs.log() * probs).sum(-1);
-
+	auto entropy = -(probs.log() * probs).sum(-1);  // Raw Categorical entropy
 	if (maskEntropy) {
-		// Account for action masking in entropy
-		// We will effectively narrow the entropy to the scope of the valid actions
-		// This way states with more masked actions don't just have inherently lower entropy
-		entropy /= actionMasks.to(torch::kFloat32).sum(-1).log();
-	} else {
-		entropy /= logf(actionMasks.size(-1));
+		constexpr float DIVISOR_MIN = 1e-6f;
+		auto maskSum = actionMasks.to(torch::kFloat32).sum(-1).clamp(1.001f, 1e9f);
+		entropy /= maskSum.log().clamp(DIVISOR_MIN, 1000.f);
 	}
-
-	return entropy.mean();
+	return entropy.clamp(0.f, 100.f).mean();  // Clamp to avoid nan
 }
 
 void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool isFirstIteration) {
 	auto mseLoss = torch::nn::MSELoss();
+	bool useGpuAccum = device.is_cuda();
 
-	MutAvgTracker
-		avgEntropy,
-		avgDivergence,
-		avgPolicyLoss,
-		avgRelEntropyLoss,
-		avgCriticLoss,
-		avgGuidingLoss,
-		avgRatio,
-		avgClip;
+	// GPU: accumulate on device to avoid per-minibatch syncs; CPU: use MutAvgTracker
+	MutAvgTracker avgEntropy, avgDivergence, avgPolicyLoss, avgCriticLoss, avgGuidingLoss, avgRatio, avgClip;
+	torch::Tensor tEntropySum, tPolicyLossSum, tCriticLossSum, tDivergenceSum, tClipSum, tRatioSum, tGuidingLossSum;
+	int64_t tCount = 0;
+	int64_t tEntropyCount = 0;  // total elements (for entropy mean over samples)
+	if (useGpuAccum) {
+		tEntropySum = torch::zeros(1, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+		tPolicyLossSum = torch::zeros(1, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+		tCriticLossSum = torch::zeros(1, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+		tDivergenceSum = torch::zeros(1, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+		tClipSum = torch::zeros(1, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+		tRatioSum = torch::zeros(1, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+		tGuidingLossSum = torch::zeros(1, torch::TensorOptions().dtype(torch::kFloat32).device(device));
+	}
 
 	// Save parameters first
 	auto policyBefore = models["policy"]->CopyParams();
 	auto criticBefore = models["critic"]->CopyParams();
+	torch::Tensor sharedHeadBefore;
+	if (models["shared_head"])
+		sharedHeadBefore = models["shared_head"]->CopyParams();
 
 	bool trainPolicy = config.policyLR != 0;
 	bool trainCritic = config.criticLR != 0;
@@ -184,28 +189,40 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 				auto obs = batchObs.slice(0, start, stop).to(device, true, true);
 				auto actionMasks = batchActionMasks.slice(0, start, stop).to(device, true, true);
 				
-				auto advantages = batchAdvantages.slice(0, start, stop).to(device, true, true);
 				auto oldProbs = batchOldProbs.slice(0, start, stop).to(device, true, true);
 				auto targetValues = batchTargetValues.slice(0, start, stop).to(device, true, true);
+
+				// rocket-learn: adv = returns - V, then normalize per minibatch
+				auto vals = InferCritic(obs);
+				vals = vals.view_as(targetValues);
+				auto advantages = (targetValues - vals.detach() - (targetValues - vals.detach()).mean())
+					/ ((targetValues - vals.detach()).std() + 1e-8f);
 
 				torch::Tensor probs, logProbs, entropy, ratio, clipped, policyLoss, ppoLoss;
 				if (trainPolicy) {
 
 					// Get policy log probs and entropy
-					float curEntropy;
 					{
 						probs = InferPolicyProbsFromModels(models, obs, actionMasks, config.policyTemperature, false);
 						logProbs = probs.log().gather(-1, acts.unsqueeze(-1));
 						entropy = ComputeEntropy(probs, actionMasks, config.maskEntropy);
-						curEntropy = entropy.detach().cpu().item<float>();
-						avgEntropy += curEntropy;
+						if (useGpuAccum) {
+							tEntropySum += entropy.detach().sum();
+							tEntropyCount += entropy.numel();
+						} else {
+							avgEntropy += entropy.detach().cpu().item<float>();
+						}
 					}
 
 					logProbs = logProbs.view_as(oldProbs);
 
 					// Compute PPO loss
 					ratio = exp(logProbs - oldProbs);
-					avgRatio += ratio.mean().detach().cpu().item<float>();
+					if (useGpuAccum) {
+						tRatioSum += ratio.detach().mean();
+					} else {
+						avgRatio += ratio.mean().detach().cpu().item<float>();
+					}
 					clipped = clamp(
 						ratio, 1 - config.clipRange, 1 + config.clipRange
 					);
@@ -214,10 +231,11 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 					policyLoss = -min(
 						ratio * advantages, clipped * advantages
 					).mean();
-					float curPolicyLoss = policyLoss.detach().cpu().item<float>();
-					avgPolicyLoss += curPolicyLoss;
-
-					avgRelEntropyLoss += (curEntropy * config.entropyScale) / curPolicyLoss;
+					if (useGpuAccum) {
+						tPolicyLossSum += policyLoss.detach();
+					} else {
+						avgPolicyLoss += policyLoss.detach().cpu().item<float>();
+					}
 
 					ppoLoss = (policyLoss - entropy * config.entropyScale) * batchSizeRatio;
 
@@ -229,7 +247,11 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 						}
 
 						auto guidingLoss = (guidingProbs - probs).abs().mean();
-						avgGuidingLoss.Add(guidingLoss.detach().cpu().item<float>());
+						if (useGpuAccum) {
+							tGuidingLossSum += guidingLoss.detach();
+						} else {
+							avgGuidingLoss.Add(guidingLoss.detach().cpu().item<float>());
+						}
 						guidingLoss = guidingLoss * config.guidingStrength;
 						ppoLoss = ppoLoss + guidingLoss;
 					}
@@ -237,12 +259,13 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 
 				torch::Tensor criticLoss;
 				if (trainCritic) {
-					auto vals = InferCritic(obs);
-
-					// Compute value loss
-					vals = vals.view_as(targetValues);
+					// vals already computed above for advantage normalization
 					criticLoss = mseLoss(vals, targetValues) * batchSizeRatio;
-					avgCriticLoss += criticLoss.detach().cpu().item<float>();
+					if (useGpuAccum) {
+						tCriticLossSum += criticLoss.detach();
+					} else {
+						avgCriticLoss += criticLoss.detach().cpu().item<float>();
+					}
 				}
 
 				if (trainPolicy) {
@@ -252,12 +275,21 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 
 						auto logRatio = logProbs - oldProbs;
 						auto klTensor = (exp(logRatio) - 1) - logRatio;
-						avgDivergence += klTensor.mean().detach().cpu().item<float>();
+						if (useGpuAccum) {
+							tDivergenceSum += klTensor.mean().detach();
+						} else {
+							avgDivergence += klTensor.mean().detach().cpu().item<float>();
+						}
 
 						auto clipFraction = mean((abs(ratio - 1) > config.clipRange).to(kFloat));
-						avgClip += clipFraction.cpu().item<float>();
+						if (useGpuAccum) {
+							tClipSum += clipFraction.detach();
+						} else {
+							avgClip += clipFraction.cpu().item<float>();
+						}
 					}
 				}
+				if (useGpuAccum) tCount++;
 
 				if (trainPolicy && trainCritic) {
 					auto combinedLoss = ppoLoss + criticLoss;
@@ -268,29 +300,24 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 					if (trainCritic)
 						criticLoss.backward();
 				}
+
+				// rocket-learn: clip + step after each minibatch (not accumulated)
+				if (trainPolicy)
+					nn::utils::clip_grad_norm_(models["policy"]->parameters(), 0.5f);
+				if (trainCritic)
+					nn::utils::clip_grad_norm_(models["critic"]->parameters(), 0.5f);
+				if (trainSharedHead)
+					nn::utils::clip_grad_norm_(models["shared_head"]->parameters(), 0.5f);
+				models.StepOptims();
 			};
 
-			
 			if (device.is_cpu()) {
-				// Just run one minibatch
 				fnRunMinibatch(0, config.batchSize);
 			} else {
 				for (int mbs = 0; mbs < config.batchSize; mbs += config.miniBatchSize) {
-					int start = mbs;
-					int stop = start + config.miniBatchSize;
-					fnRunMinibatch(start, stop);
+					fnRunMinibatch(mbs, mbs + config.miniBatchSize);
 				}
 			}
-
-			if (trainPolicy)
-				nn::utils::clip_grad_norm_(models["policy"]->parameters(), 0.5f);
-			if (trainCritic)
-				nn::utils::clip_grad_norm_(models["critic"]->parameters(), 0.5f);
-
-			if (trainSharedHead)
-				nn::utils::clip_grad_norm_(models["shared_head"]->parameters(), 0.5f);
-
-			models.StepOptims();
 		}
 	}
 
@@ -300,23 +327,46 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 
 	float policyUpdateMagnitude = (policyBefore - policyAfter).norm().item<float>();
 	float criticUpdateMagnitude = (criticBefore - criticAfter).norm().item<float>();
+	float sharedHeadUpdateMagnitude = 0.f;
+	if (models["shared_head"]) {
+		auto sharedHeadAfter = models["shared_head"]->CopyParams();
+		sharedHeadUpdateMagnitude = (sharedHeadBefore - sharedHeadAfter).norm().item<float>();
+	}
 
-	// Assemble and return report
-	report["Policy Entropy"] = avgEntropy.Get();
-	report["Mean KL Divergence"] = avgDivergence.Get();
-	if (!isFirstIteration) {
-		// These metrics give bad data on the first iteration, which will mess up graph scaling
-		// So we'll just skip them for the first iteration
-		report["Policy Loss"] = avgPolicyLoss.Get();
-		report["Policy Relative Entropy Loss"] = avgRelEntropyLoss.Get();
-		report["Critic Loss"] = avgCriticLoss.Get();
-
-		if (config.useGuidingPolicy)
-			report["Guiding Loss"] = avgGuidingLoss.Get();
-
-		report["SB3 Clip Fraction"] = avgClip.Get();
-		report["Policy Update Magnitude"] = policyUpdateMagnitude;
-		report["Critic Update Magnitude"] = criticUpdateMagnitude;
+	// Assemble and return report (single GPU sync here when useGpuAccum)
+	if (useGpuAccum && tCount > 0) {
+		auto tEntropy = (tEntropyCount > 0) ? (tEntropySum / tEntropyCount).cpu() : torch::tensor(0.f);
+		auto tDiv = (tDivergenceSum / tCount).cpu();
+		auto tPol = (tPolicyLossSum / tCount).cpu();
+		auto tCrit = (tCriticLossSum / tCount).cpu();
+		auto tClipVal = (tClipSum / tCount).cpu();
+		report["Policy Entropy"] = tEntropy.item<float>();
+		report["Mean KL Divergence"] = tDiv.item<float>();
+		if (!isFirstIteration) {
+			report["Policy Loss"] = tPol.item<float>();
+			report["Critic Loss"] = tCrit.item<float>();
+			if (config.useGuidingPolicy)
+				report["Guiding Loss"] = (tGuidingLossSum / tCount).cpu().item<float>();
+			report["SB3 Clip Fraction"] = tClipVal.item<float>();
+			report["Policy Update Magnitude"] = policyUpdateMagnitude;
+			report["Critic Update Magnitude"] = criticUpdateMagnitude;
+			if (models["shared_head"])
+				report["Shared Head Update Magnitude"] = sharedHeadUpdateMagnitude;
+		}
+	} else {
+		report["Policy Entropy"] = avgEntropy.Get();
+		report["Mean KL Divergence"] = avgDivergence.Get();
+		if (!isFirstIteration) {
+			report["Policy Loss"] = avgPolicyLoss.Get();
+			report["Critic Loss"] = avgCriticLoss.Get();
+			if (config.useGuidingPolicy)
+				report["Guiding Loss"] = avgGuidingLoss.Get();
+			report["SB3 Clip Fraction"] = avgClip.Get();
+			report["Policy Update Magnitude"] = policyUpdateMagnitude;
+			report["Critic Update Magnitude"] = criticUpdateMagnitude;
+			if (models["shared_head"])
+				report["Shared Head Update Magnitude"] = sharedHeadUpdateMagnitude;
+		}
 	}
 }
 

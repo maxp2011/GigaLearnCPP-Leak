@@ -32,24 +32,18 @@ namespace GGL {
 
 		PartialModelConfig policy, critic, sharedHead;
 
-		int epochs = 2;
+		int epochs = 10;  // rocket-learn default
 		float policyLR = 3e-4f; // Policy learning rate
 		float criticLR = 3e-4f; // Critic learning rate
 
-		float entropyScale = 0.018f; // The scale of the normalized entropy loss
-		// Whether to ignore invalid actions in the entropy calculation.
-		// True means that entropy will be determined only from available actions.
-		// False means that entropy for unavailable actions will be zero, 
-		//	meaning the entropy of the state is limited to the fraction of available actions in that state.
-		bool maskEntropy = false; 
+		float entropyScale = 0.01f;  // rocket-learn ent_coef: raw entropy scale
+		bool maskEntropy = false;     // rocket-learn: no action-mask entropy adjustment
 
-		float clipRange = 0.2f;
-		
-		// Temperature of the policy's softmax distribution
+		float clipRange = 0.2f;       // rocket-learn clip_range
 		float policyTemperature = 1;
 
-		float gaeLambda = 0.95f;
-		float gaeGamma = 0.99f;
+		float gaeLambda = 0.95f;      // rocket-learn gae_lambda
+		float gaeGamma = 0.99f;       // rocket-learn gamma
 		float rewardClipRange = 10; // Clip range for normalized rewards, set 0 to disable
 
 		bool useGuidingPolicy = false;

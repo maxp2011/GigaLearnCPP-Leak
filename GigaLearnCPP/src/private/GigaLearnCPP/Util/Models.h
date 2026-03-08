@@ -26,6 +26,12 @@ namespace GGL {
 		case ModelActivationType::LEAKY_RELU:
 			seq->push_back(torch::nn::LeakyReLU());
 			return;
+		case ModelActivationType::GELU:
+			seq->push_back(torch::nn::GELU());
+			return;
+		case ModelActivationType::SILU:
+			seq->push_back(torch::nn::SiLU());
+			return;
 		case ModelActivationType::SIGMOID:
 			seq->push_back(torch::nn::Sigmoid());
 			return;
@@ -37,12 +43,12 @@ namespace GGL {
 		RG_ERR_CLOSE("Unknown activation function type: " << (int)type);
 	}
 
-	inline torch::optim::Optimizer* MakeOptimizer(ModelOptimType type, const std::vector<torch::Tensor>& parameters, float lr) {
+	inline torch::optim::Optimizer* MakeOptimizer(ModelOptimType type, const std::vector<torch::Tensor>& parameters, float lr, float weightDecay = 0) {
 		switch (type) {
 		case ModelOptimType::ADAM:
 			return new torch::optim::Adam(parameters, lr);
 		case ModelOptimType::ADAMW:
-			return new torch::optim::AdamW(parameters, lr);
+			return new torch::optim::AdamW(parameters, torch::optim::AdamWOptions(lr).weight_decay(weightDecay));
 		case ModelOptimType::ADAGRAD:
 			return new torch::optim::Adagrad(parameters, lr);
 		case ModelOptimType::RMSPROP:

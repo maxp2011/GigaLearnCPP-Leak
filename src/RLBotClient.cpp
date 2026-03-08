@@ -21,7 +21,10 @@ RLBotBot::RLBotBot(int _index, int _team, std::string _name, const RLBotParams& 
 }
 
 RLBotBot::~RLBotBot() {
-	delete g_RLBotParams.inferUnit;
+	if (g_RLBotParams.inferUnit) {
+		delete g_RLBotParams.inferUnit;
+		g_RLBotParams.inferUnit = NULL;
+	}
 }
 
 Vec ToVec(const rlbot::flat::Vector3* rlbotVec) {
@@ -63,8 +66,8 @@ GameState ToGameState(rlbot::GameTickPacket& gameTickPacket) {
 	GameState gs = {};
 
 	auto players = gameTickPacket->players();
-	for (int i = 0; i < players->size(); i++)
-		gs.players.push_back(ToPlayer(players->Get(i)));
+	for (size_t i = 0; i < players->size(); i++)
+		gs.players.push_back(ToPlayer(players->Get(static_cast<int>(i))));
 
 	static_cast<PhysState&>(gs.ball) = ToPhysObj(gameTickPacket->ball()->physics());
 
@@ -101,6 +104,9 @@ rlbot::Controller RLBotBot::GetOutput(rlbot::GameTickPacket gameTickPacket) {
 	ticks += ticksElapsed;
 
 	GameState gs = ToGameState(gameTickPacket);
+	if (index >= (int)gs.players.size()) {
+		return rlbot::Controller();
+	}
 	auto& localPlayer = gs.players[index];
 	localPlayer.prevAction = controls;
 

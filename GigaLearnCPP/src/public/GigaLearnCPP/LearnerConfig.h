@@ -2,6 +2,7 @@
 #include <RLGymCPP/BasicTypes/Lists.h>
 #include "PPO/PPOLearnerConfig.h"
 #include "SkillTrackerConfig.h"
+#include "Distributed/DistributedConfig.h"
 
 namespace GGL {
 	enum class LearnerDeviceType {
@@ -21,14 +22,17 @@ namespace GGL {
 		// If renderMode, this is the scaling of time for the game
 		// 1.0 = Run the game at real time
 		// 2.0 = Run the game twice as fast as real time
-		float renderTimeScale = 1.0f; 
+		float renderTimeScale = 8.0f;
+		// Arena index to render: 0=Soccar1v1, 1=Soccar2v2, 2=Soccar3v3, 3=Heatseeker1v1, 4=Heatseeker2v2, 5=Heatseeker3v3
+		int renderArenaIndex = 0; 
 
 		PPOLearnerConfig ppo = {};
 
 		// Checkpoints are saved here as timestep-numbered subfolders
 		//	e.g. a checkpoint at 20,000 steps will save to a subfolder called "20000"
 		// Set empty to disable saving
-		std::filesystem::path checkpointFolder = "checkpoints"; 
+		std::filesystem::path checkpointFolder = "checkpoints";
+		bool loadCheckpoint = true;  // --no-load-checkpoint to start fresh 
 
 		// Save every timestep
 		// Set to zero to just use timestepsPerIteration
@@ -44,8 +48,9 @@ namespace GGL {
 		float maxObsMeanRange = 3;
 		int maxObsSamples = 100;
 
-		// Standardize the returns to help the critic (don't disable this unless you know what you're doing)
-		bool standardizeReturns = true;
+		// standardizeReturns: divide rewards by return std. useRewardNorm: rocket-learn style (r-mean)/std.
+		bool standardizeReturns = false;  // rocket-learn uses reward norm, not return std
+		bool useRewardNorm = true;        // rocket-learn: running mean/var on rewards
 		int maxReturnSamples = 150;
 
 		// Will automatically add the rewards to metrics
@@ -68,5 +73,7 @@ namespace GGL {
 		float trainAgainstOldChance = 0.15f; // Chance (from 0 - 1) that an iteration will train against an old version
 
 		SkillTrackerConfig skillTracker = {};
+
+		DistributedConfig distributed = {};
 	};
 }

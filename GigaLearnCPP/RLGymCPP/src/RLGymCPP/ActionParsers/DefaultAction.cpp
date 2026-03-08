@@ -89,30 +89,6 @@ RLGC::DefaultAction::DefaultAction() {
 }
 
 std::vector<uint8_t> RLGC::DefaultAction::GetActionMask(const Player& player, const GameState& state) {
-	auto result = std::vector<uint8_t>(actions.size(), false);
-
-	auto fnApplyMask = [&](const std::vector<uint8_t>& mask, bool add) {
-		if (add) {
-			for (int i = 0; i < actions.size(); i++)
-				result[i] |= mask[i];
-		} else {
-			for (int i = 0; i < actions.size(); i++)
-				result[i] &= ~mask[i];
-		}
-	};
-
-	if (player.isOnGround) {
-		fnApplyMask(groundMask, true);
-	} else {
-		fnApplyMask(airMask, true);
-	}
-
-	if (player.boost == 0)
-		fnApplyMask(boostMask, false);
-
-	bool isTurtled = player.worldContact.hasContact && player.worldContact.contactNormal.z > 0.9f;
-	if (player.HasFlipOrJump() || isTurtled)
-		fnApplyMask(jumpMask, true);
-
-	return result;
+	// Disabled: rocket-learn style, all actions allowed (no ground/air/boost/jump masking)
+	return std::vector<uint8_t>(actions.size(), 1);
 }

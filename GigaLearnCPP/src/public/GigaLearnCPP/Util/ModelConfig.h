@@ -14,6 +14,8 @@ namespace GGL {
 	enum class ModelActivationType {
 		RELU,
 		LEAKY_RELU,
+		GELU,
+		SILU,   // Swish: x * sigmoid(x)
 		SIGMOID,
 		TANH
 	};
@@ -21,8 +23,9 @@ namespace GGL {
 	// Doesn't include inputs or outputs
 	struct PartialModelConfig {
 		std::vector<int> layerSizes = {};
-		ModelActivationType activationType = ModelActivationType::RELU;
-		ModelOptimType optimType = ModelOptimType::ADAM;
+		ModelActivationType activationType = ModelActivationType::LEAKY_RELU;
+		ModelOptimType optimType = ModelOptimType::ADAMW;
+		float weightDecay = 0.01f;  // AdamW L2 decoupled weight decay
 		bool addLayerNorm = true;
 		bool addOutputLayer = true;
 

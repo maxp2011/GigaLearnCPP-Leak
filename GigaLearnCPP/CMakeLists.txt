@@ -4,20 +4,47 @@ project("GigaLearnCPP")
 
 include_directories("${PROJECT_SOURCE_DIR}/src/")
 
-# Make sure CMake finds libtorch if its in this directory
-if (EXISTS "${PROJECT_SOURCE_DIR}/libtorch/")
-	message("Using local libtorch folder...")
-	list(APPEND CMAKE_PREFIX_PATH "libtorch")
-	# Make ultra-sure we can find libtorch if its local
-	set(CMAKE_PREFIX_PATH "libtorch/share/cmake/Torch")
+# LibTorch: prefer CMAKE_PREFIX_PATH from parent, then project-local folders
+# Order: 1) env LIBTORCH_PATH 2) <project_root>/libtorch 3) <GigaLearnCPP>/libtorch
+if(DEFINED ENV{LIBTORCH_PATH} AND EXISTS "$ENV{LIBTORCH_PATH}")
+	list(APPEND CMAKE_PREFIX_PATH "$ENV{LIBTORCH_PATH}")
+	message(STATUS "Using LibTorch from LIBTORCH_PATH: $ENV{LIBTORCH_PATH}")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/libtorch")
+	list(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/libtorch")
+	message(STATUS "Using local libtorch: ${CMAKE_SOURCE_DIR}/libtorch")
+elseif(EXISTS "${PROJECT_SOURCE_DIR}/libtorch")
+	list(APPEND CMAKE_PREFIX_PATH "${PROJECT_SOURCE_DIR}/libtorch")
+	message(STATUS "Using local libtorch: ${PROJECT_SOURCE_DIR}/libtorch")
+endif()
+
+# Workaround: CUDA 12+/13 no longer provides CUDA::nvToolsExt (replaced by NVTX3),
+# but libtorch's cuda.cmake expects it. Create stub target; libtorch bundles nvToolsExt64_1.dll.
+if(NOT TARGET CUDA::nvToolsExt)
+	add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+	message(STATUS "Created stub CUDA::nvToolsExt for libtorch CUDA 13 compatibility")
+endif()
+
+# CUDA 13.0 dropped compute_50; set before find_package so cuda.cmake uses it
+if(NOT DEFINED TORCH_CUDA_ARCH_LIST)
+	set(TORCH_CUDA_ARCH_LIST "7.5;8.0;8.6;8.9;9.0;9.0a" CACHE STRING "CUDA arches (no 5.0 for CUDA 13)")
 endif()
 
 # Add libtorch (https://pytorch.org/cppdocs/installing.html#minimal-example)
 find_package(Torch REQUIRED)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+# Remove --Werror cross-execution-space-call so our device-only .cu files compile (libtorch cuda.cmake adds it for MSVC)
+string(REPLACE "--Werror cross-execution-space-call" "" TORCH_CXX_FLAGS_FILTERED "${TORCH_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS_FILTERED}")
+string(REPLACE " --Werror cross-execution-space-call" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}" CACHE STRING "" FORCE)
 
 # Add all headers and code files
 file(GLOB_RECURSE FILES_SRC "src/*.cpp" "src/*.h" "src/*.hpp" "libsrc/*.cpp" "libsrc/.h" "libsrc/.hpp")
+
+if (TORCH_CUDA_LIBRARIES)
+	file(GLOB_RECURSE FILES_CUDA "src/*.cu")
+	set_source_files_properties(${FILES_CUDA} PROPERTIES LANGUAGE CUDA)
+	list(APPEND FILES_SRC ${FILES_CUDA})
+endif()
 
 add_library(GigaLearnCPP SHARED ${FILES_SRC})
 target_compile_definitions(GigaLearnCPP PRIVATE -DWITHIN_GGL)
@@ -30,11 +57,37 @@ target_link_libraries(GigaLearnCPP PRIVATE "${TORCH_LIBRARIES}")
 if (TORCH_CUDA_LIBRARIES)
 	message("Enabling CUDA support...")
 	target_compile_definitions(GigaLearnCPP PRIVATE -DRG_CUDA_SUPPORT)
+	# Note: LibTorch adds --Werror cross-execution-space-call. --Wno-error is not a valid nvcc option.
+	# CUDA 13.0 MSBuild targets require CudaToolkitDir with trailing slash (else v13.0+bin = v13.0bin)
+	if(CUDA_TOOLKIT_ROOT_DIR)
+		string(REGEX REPLACE "/?$" "/" _cuda_dir "${CUDA_TOOLKIT_ROOT_DIR}")
+		set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_GLOBAL_CudaToolkitDir "${_cuda_dir}")
+	endif()
+	if(CMAKE_VS_PLATFORM_TOOLSET_CUDA_CUSTOM_DIR)
+		string(REGEX REPLACE "/?$" "/" _cuda_dir "${CMAKE_VS_PLATFORM_TOOLSET_CUDA_CUSTOM_DIR}")
+		set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_GLOBAL_CudaToolkitDir "${_cuda_dir}")
+	endif()
 endif()
 
 # Set C++ version to 20
 set_target_properties(GigaLearnCPP PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(GigaLearnCPP PROPERTIES CXX_STANDARD 20)
+
+# Optional: Redis for scalable distributed (3000+ workers)
+option(GIGL_USE_REDIS "Use Redis for distributed training" ON)
+if(GIGL_USE_REDIS)
+	include(FetchContent)
+	FetchContent_Declare(hiredis
+		GIT_REPOSITORY https://github.com/redis/hiredis
+		GIT_TAG v1.3.0
+	)
+	set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+	FetchContent_MakeAvailable(hiredis)
+	target_compile_definitions(GigaLearnCPP PRIVATE GIGL_REDIS)
+	target_link_libraries(GigaLearnCPP PRIVATE hiredis)
+	target_include_directories(GigaLearnCPP PRIVATE ${hiredis_SOURCE_DIR})
+	message(STATUS "Redis (hiredis) enabled for distributed training")
+endif()
 
 # Include RLGymCPP
 add_subdirectory(RLGymCPP)
@@ -72,6 +125,7 @@ if (MSVC)
 endif (MSVC)
 
 # Make our python files copy over to our build dir
+configure_file("./python_scripts/__init__.py" "../python_scripts/__init__.py" COPY)
 configure_file("./python_scripts/metric_receiver.py" "../python_scripts/metric_receiver.py" COPY)
 configure_file("./python_scripts/render_receiver.py" "../python_scripts/render_receiver.py" COPY)
 

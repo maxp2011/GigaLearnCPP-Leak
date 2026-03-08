@@ -28,6 +28,7 @@ namespace GGL {
 		int numActions;
 
 		struct WelfordStat* returnStat;
+		struct WelfordStat* rewardStat;   // rocket-learn: running mean/var for reward normalization
 		struct BatchedWelfordStat* obsStat;
 
 		std::string runID = {};
@@ -40,7 +41,12 @@ namespace GGL {
 
 		Learner(RLGC::EnvCreateFn envCreateFunc, LearnerConfig config, StepCallbackFn stepCallback = NULL);
 		void Start();
-
+		void StartDistributedLearner();
+		void StartDistributedWorker();
+#ifdef GIGL_REDIS
+		void StartDistributedLearnerRedis();
+		void StartDistributedWorkerRedis();
+#endif
 		void StartTransferLearn(const TransferLearnConfig& transferLearnConfig);
 
 		void StartQuitKeyThread(bool& quitPressed, std::thread& outThread);

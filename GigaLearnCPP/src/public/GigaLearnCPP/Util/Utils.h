@@ -24,7 +24,7 @@ namespace GGL {
 			return json.get<std::vector<T>>();
 		}
 
-		std::set<int64_t> FindNumberedDirs(std::filesystem::path basePath);
+		RG_IMEXPORT std::set<int64_t> FindNumberedDirs(std::filesystem::path basePath);
 
 		template <typename T>
 		std::string NumToStr(T val) {
