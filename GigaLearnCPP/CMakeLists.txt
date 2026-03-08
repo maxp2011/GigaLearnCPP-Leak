@@ -24,9 +24,9 @@ if(NOT TARGET CUDA::nvToolsExt)
 	message(STATUS "Created stub CUDA::nvToolsExt for libtorch CUDA 13 compatibility")
 endif()
 
-# CUDA 13.0 dropped compute_50; set before find_package so cuda.cmake uses it
+# CUDA arches: 12.0 = RTX 5090 (sm_120); compute_125 not in CUDA 12.9
 if(NOT DEFINED TORCH_CUDA_ARCH_LIST)
-	set(TORCH_CUDA_ARCH_LIST "7.5;8.0;8.6;8.9;9.0;9.0a" CACHE STRING "CUDA arches (no 5.0 for CUDA 13)")
+	set(TORCH_CUDA_ARCH_LIST "7.5;8.0;8.6;8.9;9.0;9.0a;12.0" CACHE STRING "CUDA arches (12.0 for RTX 5090)")
 endif()
 
 # Add libtorch (https://pytorch.org/cppdocs/installing.html#minimal-example)

@@ -13,9 +13,8 @@ PYTORCH_SRC="${PYTORCH_SRC:-$ROOT/pytorch-src}"
 PYTORCH_REPO="${PYTORCH_REPO:-https://github.com/pytorch/pytorch.git}"
 PYTORCH_BRANCH="${PYTORCH_BRANCH:-main}"
 
-# sm_120 = RTX 5090/5080 Blackwell; 12.0 = compute capability for sm_120
-# Include common arches + Blackwell for 5090s
-export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6;8.9;9.0;9.0a;12.0;12.5}"
+# sm_120 = RTX 5090/5080 Blackwell (compute_125 not supported by CUDA 12.9 nvcc)
+export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6;8.9;9.0;9.0a;12.0}"
 
 echo "=== Building LibTorch from source (sm_120/sm_125 for RTX 5090) ==="
 echo "  Install dir: $INSTALL_DIR"
