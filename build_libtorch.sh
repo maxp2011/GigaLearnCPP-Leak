@@ -32,11 +32,12 @@ cd "$PYTORCH_SRC"
 echo "Updating submodules..."
 git submodule sync --recursive
 git submodule update --init --recursive
-# If nccl is still empty, remove and re-init (common with shallow clones)
-if [ ! -d "third_party/nccl/nccl" ] && [ -d "third_party/nccl" ]; then
-    echo "Fixing NCCL submodule..."
+
+# NCCL is not a git submodule; PyTorch expects source in third_party/nccl
+if [ ! -f "third_party/nccl/Makefile" ]; then
+    echo "Cloning NCCL (PyTorch expects it in third_party/nccl)..."
     rm -rf third_party/nccl
-    git submodule update --init third_party/nccl
+    git clone --depth 1 https://github.com/NVIDIA/nccl.git third_party/nccl
 fi
 
 # Install build deps (Ubuntu)
@@ -64,7 +65,6 @@ cmake .. -G Ninja \
     -DBUILD_SHARED_LIBS=ON \
     -DUSE_CUDA=ON \
     -DUSE_CUDNN=ON \
-    -DUSE_NCCL=OFF \
     -DUSE_MPI=OFF \
     -DUSE_NUMA=OFF \
     -DTORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
