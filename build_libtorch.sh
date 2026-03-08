@@ -23,14 +23,21 @@ echo "  TORCH_CUDA_ARCH_LIST: $TORCH_CUDA_ARCH_LIST"
 echo "  Source: $PYTORCH_SRC"
 echo ""
 
-# Clone PyTorch (full clone for submodules)
+# Clone PyTorch (full clone with submodules - no --depth to get all submodules)
 if [ ! -d "$PYTORCH_SRC" ]; then
     echo "Cloning PyTorch (this may take a while, ~2GB)..."
     git clone --recursive --branch "$PYTORCH_BRANCH" "$PYTORCH_REPO" "$PYTORCH_SRC"
 fi
 cd "$PYTORCH_SRC"
-git submodule sync --recursive 2>/dev/null || true
-git submodule update --init --recursive 2>/dev/null || true
+echo "Updating submodules..."
+git submodule sync --recursive
+git submodule update --init --recursive
+# If nccl is still empty, remove and re-init (common with shallow clones)
+if [ ! -d "third_party/nccl/nccl" ] && [ -d "third_party/nccl" ]; then
+    echo "Fixing NCCL submodule..."
+    rm -rf third_party/nccl
+    git submodule update --init third_party/nccl
+fi
 
 # Install build deps (Ubuntu)
 if command -v apt-get &>/dev/null; then
@@ -57,6 +64,9 @@ cmake .. -G Ninja \
     -DBUILD_SHARED_LIBS=ON \
     -DUSE_CUDA=ON \
     -DUSE_CUDNN=ON \
+    -DUSE_NCCL=OFF \
+    -DUSE_MPI=OFF \
+    -DUSE_NUMA=OFF \
     -DTORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH_LIST" \
     $CMAKE_CUDA
 
