@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build LibTorch from source with sm_120 (RTX 5090 / Blackwell) support.
-# Requires: CUDA 12.9, git, cmake, ninja, python3, pip.
+# Requires: CUDA 12.8+, git, cmake, ninja, python3, pip.
 # Usage: ./build_libtorch.sh [install_dir]
 # Output: libtorch in $ROOT/libtorch or $1
 #
@@ -28,6 +28,21 @@ TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST#;}"
 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST%;}"
 [ -z "$TORCH_CUDA_ARCH_LIST" ] && TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;9.0a;12.0"
 export TORCH_CUDA_ARCH_LIST
+
+# Check CUDA 12.8+ (required for sm_120)
+_cuda_ver=""
+if command -v nvcc &>/dev/null; then
+    _cuda_ver=$(nvcc --version 2>/dev/null | grep -oE 'release [0-9.]+' | grep -oE '[0-9.]+' | head -1)
+fi
+if [ -n "$_cuda_ver" ]; then
+    _major=$(echo "$_cuda_ver" | cut -d. -f1)
+    _minor=$(echo "$_cuda_ver" | cut -d. -f2)
+    if [ "$_major" -lt 12 ] || { [ "$_major" -eq 12 ] && [ "$_minor" -lt 8 ]; }; then
+        echo "ERROR: CUDA 12.8+ required for sm_120. Found: $_cuda_ver"
+        exit 1
+    fi
+    echo "CUDA $_cuda_ver (OK for sm_120)"
+fi
 
 echo "=== Building LibTorch from source (sm_120 for RTX 5090) ==="
 echo "  Install dir: $INSTALL_DIR"

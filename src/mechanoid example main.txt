@@ -55,18 +55,35 @@ static std::string ParseStrArg(int argc, char* argv[], const char* flag, const c
 // Create the RLGymCPP environment for each of our games
 EnvCreateResult EnvCreateFunc(int index) {
 	std::vector<WeightedReward> rewards = {
+		{ new ZeroSumReward(new StrongTouchReward(20, 90), 0.f, 0.7f), 5.0f },
+		{ new ZeroSumReward(new RLGC::VelocityBallToGoalMouthReward(), 1.f, 0.7f), 50.f },
+		{ new ZeroSumReward(new RLGC::VelocityPlayerToBallReward(), 1.f, 0.7f), 3.5f },
+		{ new ZeroSumReward(new RLGC::ShieldzKORew(), 1.0f, 1.0f), 5.0f },
+		{ new ZeroSumReward(new RLGC::FlyToGoalKeepHigh(), 1.0f, 1.0f), 0.115f },
+	//	{ new ZeroSumReward(new RLGC::RipplesFlipResetFreestyleChain(), 1.f, 0.1f), 1.3f },
+		{ new ZeroSumReward(new RLGC::PickupBoostReward(), 0.f, 1.0f), 33.5f },
+		{ new RLGC::SaveBoostReward(0.5f), 1.23f },
+		{ new RLGC::RippleDemoReward(), 600.23f },
+		{ new RLGC::GoalReward(-1.f), 650.f },
+	//	{ new RLGC::ConsolidatedDemoReward(), 150.23f },
 		
+		{ new RLGC::TeamSpacingReward_MKH(1000.0f, 1.0f), 9.f },
 
 
-	    { new RLGC::TouchBallReward (), 5.f },
-		{ new RLGC::AirReward (), .15f },
-		{ new RLGC::FaceBallReward (), 0.1f },
-		{ new RLGC::VelocityPlayerToBallReward (), 1.f },
-		{ new RLGC::GoalReward (), 50.f },
+		{ new SimpleFlipResetLearnReward(150.0f), 1.0f },
+        { new PopResetReward(300.0f), 1.0f},
+		
+	//	{ new RLGC::DribbleAirdribbleBumpDemoRewardv3(), 2000.23f },
+
+		
+	//	{ new RLGC::ControlReward (), 1.f },
+
+
+	    { new RLGC::DemoBumpNearBallReward (), 200.f },
 		
 		//{ new RLGC::PopResetReward(), 350.f },
 		//{ new RLGC::SimpleResetTeachReward(), 60.f },
-	//	{ new RLGC::EnergyReward (), 0.0000001f },
+		{ new RLGC::EnergyReward (), 0.0000001f },
 	
 	};
 
@@ -89,8 +106,8 @@ EnvCreateResult EnvCreateFunc(int index) {
 
 	EnvCreateResult result = {};
 	result.actionParser = new DefaultAction();
-	result.obsBuilder = new CustomObs();
-	//result.obsBuilder = new AdvancedObsPadded();
+	//result.obsBuilder = new CustomObs();
+	result.obsBuilder = new AdvancedObsPadded();
 	result.stateSetter = new KickoffState();
 	result.terminalConditions = terminalConditions;
 	result.rewards = rewards;
@@ -171,7 +188,7 @@ int main(int argc, char* argv[]) {
 	cfg.ppo.miniBatchSize = 65536;  // Fits 12GB GPU; 262144 OOMs
 	cfg.ppo.epochs = 1;   // Fewer epochs = faster consumption
 	cfg.ppo.entropyScale = 0.01f;   // rocket-learn ent_coef
-	cfg.ppo.gaeGamma = 0.998f;       // rocket-learn gamma
+	cfg.ppo.gaeGamma = 0.991f;       // rocket-learn gamma
 	cfg.ppo.gaeLambda = 0.95f;      // rocket-learn gae_lambda
 
 	cfg.ppo.policyLR = 1e-4f;       // rocket-learn/SB3 typical
